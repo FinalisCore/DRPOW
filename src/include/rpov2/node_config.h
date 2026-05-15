@@ -1,0 +1,27 @@
+#ifndef COIN_NODE_CONFIG_H
+#define COIN_NODE_CONFIG_H
+
+#include <stdint.h>
+#include <string>
+#include <vector>
+
+namespace rpov2 {
+
+struct NodeConfig {
+    std::string data_dir;
+    uint16_t bind_port;
+    std::vector<std::string> peers;
+    std::string public_endpoint;
+    int duration_sec;
+    int autopropose;
+    int autopropose_interval_sec;
+    uint32_t network_magic;
+    std::vector<std::string> validator_pubkeys_hex;
+    std::string signer_privkey_hex;
+};
+
+bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err);
+
+}  // namespace rpov2
+
+#endif
