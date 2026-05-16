@@ -12,7 +12,7 @@ NODE_BIN="${ROOT_DIR}/build/rpov2_node"
 CLI_BIN="${ROOT_DIR}/build/rpov2_cli"
 
 BIND_PORT="${BIND_PORT:-29101}"
-SEED_PEER="${SEED_PEER:-212.58.103.170:29101}"
+SEED_PEER="${SEED_PEER:-}"
 DATA_DIR="${DATA_DIR:-${ROOT_DIR}/data}"
 PUBLIC_ENDPOINT="${PUBLIC_ENDPOINT:-}"
 NETWORK_MAGIC_HEX="${NETWORK_MAGIC_HEX:-0x52504f57}"
@@ -68,13 +68,15 @@ write_config() {
   mkdir -p "${DATA_DIR}"
   cat > "${ROOT_DIR}/global_testnet.conf" <<CFG
 bind_port=${BIND_PORT}
-peers=${SEED_PEER}
 data_dir=${DATA_DIR}
 network_magic_hex=${NETWORK_MAGIC_HEX}
 duration_sec=${DURATION_SEC}
 autopropose=${AUTOPROPOSE}
 autopropose_interval_sec=${AUTOPROPOSE_INTERVAL_SEC}
 CFG
+  if [ -n "${SEED_PEER}" ]; then
+    echo "peers=${SEED_PEER}" >> "${ROOT_DIR}/global_testnet.conf"
+  fi
   if [ -n "${PUBLIC_ENDPOINT}" ]; then
     echo "public_endpoint=${PUBLIC_ENDPOINT}" >> "${ROOT_DIR}/global_testnet.conf"
   fi
