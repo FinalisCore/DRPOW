@@ -3,6 +3,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <unistd.h>
 
 #include <fstream>
 #include <string>
@@ -10,6 +13,7 @@
 
 #include "rpov2/address.h"
 #include "../crypto/crypto_backend.h"
+#include "p2p_wire.h"
 #include "rpov2/mempool.h"
 #include "rpov2/tx_codec.h"
 #include "rpov2/tx_types.h"
@@ -26,6 +30,7 @@ static void Usage(const char* bin)
     printf("  %s wallet send <to_address> <amount> <fee> [data_dir] [network_magic_hex] [registry_file]\n", bin);
     printf("  %s address validate <address> [network_magic_hex]\n", bin);
     printf("  %s mempool demo\n", bin);
+    printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", bin);
 }
 
 static void WalletUsage(const char* bin)
@@ -93,6 +98,155 @@ static bool SaveHexFile(const std::string& path, const std::vector<uint8_t>& byt
         return false;
     out << Hex(bytes.empty() ? NULL : &bytes[0], bytes.size()) << "\n";
     return out.good();
+}
+
+static bool ParseHostPort(const std::string& s, std::string* host, uint16_t* port)
+{
+    if (!host || !port)
+        return false;
+    size_t c = s.rfind(':');
+    if (c == std::string::npos || c == 0 || c + 1 >= s.size())
+        return false;
+    *host = s.substr(0, c);
+    *port = (uint16_t)atoi(s.substr(c + 1).c_str());
+    return !host->empty() && *port > 0;
+}
+
+static bool DecodeHexLine(const std::string& s, std::vector<uint8_t>* out)
+{
+    if (!out)
+        return false;
+    out->clear();
+    if (s.empty() || (s.size() % 2) != 0)
+        return false;
+    out->resize(s.size() / 2);
+    for (size_t i = 0; i < out->size(); ++i)
+    {
+        char a = s[i * 2];
+        char b = s[i * 2 + 1];
+        int hi = (a >= '0' && a <= '9') ? (a - '0') : (a >= 'a' && a <= 'f') ? (10 + a - 'a') : (a >= 'A' && a <= 'F') ? (10 + a - 'A') : -1;
+        int lo = (b >= '0' && b <= '9') ? (b - '0') : (b >= 'a' && b <= 'f') ? (10 + b - 'a') : (b >= 'A' && b <= 'F') ? (10 + b - 'A') : -1;
+        if (hi < 0 || lo < 0)
+            return false;
+        (*out)[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static int TxSubmitCmd(const char* tx_hex_file, const char* node_endpoint, uint32_t network_magic)
+{
+    std::ifstream in(tx_hex_file);
+    if (!in.good())
+    {
+        printf("tx_submit_error: tx_file_open_failed\n");
+        return 20;
+    }
+    std::string line;
+    if (!std::getline(in, line))
+    {
+        printf("tx_submit_error: tx_file_read_failed\n");
+        return 21;
+    }
+    std::vector<uint8_t> tx_bytes;
+    if (!DecodeHexLine(line, &tx_bytes))
+    {
+        printf("tx_submit_error: tx_hex_decode_failed\n");
+        return 22;
+    }
+    SpendTx tx;
+    size_t off = 0;
+    if (!ParseSpendTxCanonical(tx_bytes.empty() ? NULL : &tx_bytes[0], tx_bytes.size(), &off, &tx) || off != tx_bytes.size())
+    {
+        printf("tx_submit_error: tx_parse_failed\n");
+        return 23;
+    }
+
+    std::vector<uint8_t> payload;
+    if (!SerializeSpendTxSubmitPayload(tx, &payload))
+    {
+        printf("tx_submit_error: payload_serialize_failed\n");
+        return 24;
+    }
+    WireEnvelope env;
+    env.magic = network_magic;
+    env.version = 1;
+    env.msg_type = WIRE_MSG_TX;
+    env.payload_len = (uint32_t)payload.size();
+    env.unix_ms = (uint64_t)time(NULL) * 1000ULL;
+    env.payload_hash = Bytes32();
+    env.payload.swap(payload);
+    std::vector<uint8_t> framed;
+    if (!SerializeWireEnvelope(env, &framed))
+    {
+        printf("tx_submit_error: envelope_serialize_failed\n");
+        return 25;
+    }
+
+    std::string host;
+    uint16_t port = 0;
+    if (!ParseHostPort(node_endpoint, &host, &port))
+    {
+        printf("tx_submit_error: endpoint_invalid\n");
+        return 26;
+    }
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_INET;
+    char port_s[16];
+    snprintf(port_s, sizeof(port_s), "%u", (unsigned)port);
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host.c_str(), port_s, &hints, &res) != 0 || !res)
+    {
+        printf("tx_submit_error: resolve_failed\n");
+        return 27;
+    }
+    int fd = -1;
+    for (struct addrinfo* ai = res; ai; ai = ai->ai_next)
+    {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0)
+            continue;
+        if (connect(fd, ai->ai_addr, (socklen_t)ai->ai_addrlen) == 0)
+            break;
+        close(fd);
+        fd = -1;
+    }
+    freeaddrinfo(res);
+    if (fd < 0)
+    {
+        printf("tx_submit_error: connect_failed\n");
+        return 28;
+    }
+
+    uint8_t hdr[4];
+    const uint32_t n = (uint32_t)framed.size();
+    hdr[0] = (uint8_t)(n & 0xff);
+    hdr[1] = (uint8_t)((n >> 8) & 0xff);
+    hdr[2] = (uint8_t)((n >> 16) & 0xff);
+    hdr[3] = (uint8_t)((n >> 24) & 0xff);
+    ssize_t w = send(fd, hdr, 4, 0);
+    if (w != 4)
+    {
+        close(fd);
+        printf("tx_submit_error: send_header_failed\n");
+        return 29;
+    }
+    size_t sent = 0;
+    while (sent < framed.size())
+    {
+        ssize_t k = send(fd, &framed[sent], framed.size() - sent, 0);
+        if (k <= 0)
+        {
+            close(fd);
+            printf("tx_submit_error: send_payload_failed\n");
+            return 30;
+        }
+        sent += (size_t)k;
+    }
+    close(fd);
+    printf("tx_submit_ok endpoint=%s bytes=%zu\n", node_endpoint, framed.size());
+    return 0;
 }
 
 struct LocalUtxo {
@@ -525,6 +679,17 @@ int main(int argc, char** argv)
             return MempoolDemo();
         MempoolUsage(argv[0]);
         return 1;
+    }
+    if (cmd == "tx")
+    {
+        if (argc < 5 || std::string(argv[2]) != "submit")
+        {
+            printf("tx usage:\n");
+            printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", argv[0]);
+            return 1;
+        }
+        uint32_t magic = ParseMagic(argc >= 6 ? argv[5] : NULL);
+        return TxSubmitCmd(argv[3], argv[4], magic);
     }
 
     Usage(argv[0]);

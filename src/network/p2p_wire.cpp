@@ -529,4 +529,27 @@ bool ParsePeerListPayload(const std::vector<uint8_t>& in,
     return off == in.size();
 }
 
+bool SerializeSpendTxSubmitPayload(const SpendTx& tx, std::vector<uint8_t>* out)
+{
+    if (!out)
+        return false;
+    out->clear();
+    SerializeSpendTxCanonical(tx, out);
+    return !out->empty();
+}
+
+bool ParseSpendTxSubmitPayload(const std::vector<uint8_t>& in, SpendTx* out)
+{
+    if (!out || in.empty())
+        return false;
+    size_t off = 0;
+    SpendTx tx;
+    if (!ParseSpendTxCanonical(&in[0], in.size(), &off, &tx))
+        return false;
+    if (off != in.size())
+        return false;
+    *out = tx;
+    return true;
+}
+
 }  

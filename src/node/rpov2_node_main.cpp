@@ -17,6 +17,7 @@
 
 #include "consensus_round.h"
 #include "crypto_backend.h"
+#include "rpov2/mempool.h"
 #include "rpov2/node_config.h"
 #include "p2p_wire.h"
 #include "p2p_reactor.h"
@@ -759,6 +760,7 @@ int main(int argc, char** argv)
 
     RegistryStateStore store(registry, commitlog, evidlog, &proof_verifier, crypto.get(), signer_priv, &signer_id);
     ConsensusRoundEngine engine(&store, &vset, &vote_verifier, &proof_verifier, &economics_policy);
+    Mempool mempool;
     std::map<std::string, RoundBatch> known_batches;
     std::map<std::string, std::vector<Vote> > known_votes;
     std::map<std::string, std::set<std::string> > known_vote_ids;
@@ -1350,6 +1352,25 @@ int main(int argc, char** argv)
             TryCatchUpFromCache();
             return;
         }
+        if (env.msg_type == WIRE_MSG_TX)
+        {
+            SpendTx tx;
+            if (!ParseSpendTxSubmitPayload(env.payload, &tx))
+            {
+                printf("drop tx parse_failed\n");
+                return;
+            }
+            std::string mem_err;
+            if (!mempool.AddSpend(tx, &mem_err))
+            {
+                printf("drop tx add_failed reason=%s\n", mem_err.c_str());
+                return;
+            }
+            printf("tx accepted spends_mempool=%zu\n", mempool.SpendCount());
+            // Gossip accepted tx; duplicates are dropped by mempool txid dedup.
+            (void)reactor.Broadcast(env);
+            return;
+        }
         if (env.msg_type == WIRE_MSG_PROPOSE)
         {
             RoundBatch batch;
@@ -1579,6 +1600,8 @@ int main(int argc, char** argv)
             if (!have_pending)
             {
                 batch.round = target_round;
+                std::vector<SpendTx> drained_spends = mempool.DrainSpends(economics_policy.max_spends_per_round);
+                batch.spends = drained_spends;
                 MintTx mint;
                 mint.output.value = 1;
                 for (int i = 0; i < 32; ++i)
@@ -1607,6 +1630,11 @@ int main(int argc, char** argv)
                        Hex32(mint.miner_pubkey).c_str());
                 if (!(BuildBatchHashLocal(batch, &batch.batch_hash) && engine.Propose(batch)))
                 {
+                    for (size_t i = 0; i < drained_spends.size(); ++i)
+                    {
+                        std::string readd_err;
+                        (void)mempool.AddSpend(drained_spends[i], &readd_err);
+                    }
                     last_autopropose_tick = time(NULL);
                     continue;
                 }

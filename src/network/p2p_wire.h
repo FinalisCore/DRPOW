@@ -62,6 +62,8 @@ bool ParsePeerListPayload(const std::vector<uint8_t>& in,
                           Bytes32* advertiser_id,
                           std::vector<std::string>* peers,
                           std::vector<uint8_t>* signature);
+bool SerializeSpendTxSubmitPayload(const SpendTx& tx, std::vector<uint8_t>* out);
+bool ParseSpendTxSubmitPayload(const std::vector<uint8_t>& in, SpendTx* out);
 
 }  
 

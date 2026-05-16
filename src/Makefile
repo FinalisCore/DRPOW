@@ -80,8 +80,8 @@ $(BUILD_DIR)/rpov2_pow_epoch_transition_smoketest: $(RPOV2_POW_EPOCH_TRANSITION_
 $(BUILD_DIR)/rpov2_difficulty_transition_smoketest: $(RPOV2_DIFFICULTY_TRANSITION_SMOKETEST_SRCS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $(RPOV2_DIFFICULTY_TRANSITION_SMOKETEST_SRCS) $(LDFLAGS) $(LDLIBS)
 
-$(BUILD_DIR)/rpov2_node: $(RPOV2_COMMON_SRCS) node/rpov2_node_main.cpp | $(BUILD_DIR)
-	$(CXX) $(CXXFLAGS) -o $@ $(RPOV2_COMMON_SRCS) node/rpov2_node_main.cpp $(LDFLAGS) $(LDLIBS)
+$(BUILD_DIR)/rpov2_node: $(RPOV2_COMMON_SRCS) mempool/mempool.cpp node/rpov2_node_main.cpp | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $(RPOV2_COMMON_SRCS) mempool/mempool.cpp node/rpov2_node_main.cpp $(LDFLAGS) $(LDLIBS)
 
 $(BUILD_DIR)/rpov2_cli: $(RPOV2_COMMON_SRCS) $(RPOV2_WALLET_SRCS) cli/rpov2_cli_main.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $(RPOV2_COMMON_SRCS) $(RPOV2_WALLET_SRCS) cli/rpov2_cli_main.cpp $(LDFLAGS) $(LDLIBS)
