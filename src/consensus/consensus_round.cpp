@@ -73,8 +73,12 @@ static bool HasPowAuthorization(const RoundBatch& batch, const ProofVerifier* pr
     return proof_verifier->VerifyMintTx(batch.mints[0]);
 }
 
-static bool IsMinerEligibleForRound(const RoundBatch& batch, const ValidatorSet* validator_set)
+static bool IsMinerEligibleForRound(const RoundBatch& batch,
+                                    const ValidatorSet* validator_set,
+                                    const EconomicsPolicy& policy)
 {
+    if (batch.round > 0 && batch.round <= policy.genesis_bootstrap_rounds)
+        return !batch.mints.empty();
     if (!validator_set || batch.mints.empty())
         return false;
     ValidatorEpoch epoch;
@@ -201,7 +205,7 @@ bool ConsensusRoundEngine::Propose(const RoundBatch& batch)
         return Fail(REJECT_FEE_POLICY_INVALID, "fee policy invalid");
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
         return Fail(REJECT_PROOF_BUDGET_EXCEEDED, "proof budget exceeded");
-    if (!IsMinerEligibleForRound(batch, validator_set_))
+    if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
         return Fail(REJECT_POW_ELIGIBILITY_INVALID, "pow eligibility invalid");
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
@@ -231,7 +235,7 @@ bool ConsensusRoundEngine::ValidateAndVote(const RoundBatch& batch, Vote* out_vo
         return false;
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
         return false;
-    if (!IsMinerEligibleForRound(batch, validator_set_))
+    if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
         return false;
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
@@ -262,7 +266,7 @@ bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertifica
         return Fail(REJECT_FEE_POLICY_INVALID, "fee policy invalid");
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
         return Fail(REJECT_PROOF_BUDGET_EXCEEDED, "proof budget exceeded");
-    if (!IsMinerEligibleForRound(batch, validator_set_))
+    if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
         return Fail(REJECT_POW_ELIGIBILITY_INVALID, "pow eligibility invalid");
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))

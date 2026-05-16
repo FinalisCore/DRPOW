@@ -108,7 +108,7 @@ int main()
         mint.target.v[i] = 0xff;
 
     RoundBatch bad;
-    bad.round = 1;
+    bad.round = 11;
     mint.miner_pubkey = other_id;
     mint.signature = BuildMintSig(*crypto, other_priv, mint);
     bad.mints.push_back(mint);
@@ -126,7 +126,7 @@ int main()
     }
 
     RoundBatch good;
-    good.round = 1;
+    good.round = 11;
     mint.miner_pubkey = signer_id;
     mint.signature = BuildMintSig(*crypto, signer_priv, mint);
     good.mints.clear();

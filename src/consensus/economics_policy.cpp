@@ -99,6 +99,7 @@ EconomicsPolicy DefaultEconomicsPolicy()
     p.target_mints_per_window = 10;
     p.target_adjust_up_ppm_limit = 2000000;
     p.target_adjust_down_ppm_limit = 500000;
+    p.genesis_bootstrap_rounds = 10;
     return p;
 }
 

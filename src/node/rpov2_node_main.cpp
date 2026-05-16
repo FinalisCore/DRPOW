@@ -670,6 +670,7 @@ int main(int argc, char** argv)
     }
     EconomicsPolicy economics_policy = DefaultEconomicsPolicy();
     const uint64_t kRuntimeEpochLength = 10;
+    const size_t kEpochValidatorCap = 64;
     PowLotteryValidatorSet vset(kRuntimeEpochLength);
     if (!vset.InstallEpoch(0, vals))
     {
@@ -795,7 +796,7 @@ int main(int argc, char** argv)
                                                             have_prev_epoch ? &prev_epoch : NULL,
                                                             epoch,
                                                             kRuntimeEpochLength,
-                                                            vals.size());
+                                                            kEpochValidatorCap);
         }
         if (next_vals.empty())
             return;
@@ -863,18 +864,21 @@ int main(int argc, char** argv)
                 break;
             }
             EnsureEpochTransitionForRound(batch.round);
-            ValidatorEpoch epoch;
-            if (!vset.GetEpochForRound(batch.round, &epoch))
+            if (batch.round > economics_policy.genesis_bootstrap_rounds)
             {
-                printf("catchup_break_epoch_missing round=%llu\n", (unsigned long long)batch.round);
-                break;
-            }
-            if (!VerifyQuorumCertificate(epoch, qc, batch.round, batch.batch_hash, vote_verifier))
-            {
-                printf("catchup_break_qc_invalid round=%llu votes=%zu\n",
-                       (unsigned long long)batch.round,
-                       qc.votes.size());
-                break;
+                ValidatorEpoch epoch;
+                if (!vset.GetEpochForRound(batch.round, &epoch))
+                {
+                    printf("catchup_break_epoch_missing round=%llu\n", (unsigned long long)batch.round);
+                    break;
+                }
+                if (!VerifyQuorumCertificate(epoch, qc, batch.round, batch.batch_hash, vote_verifier))
+                {
+                    printf("catchup_break_qc_invalid round=%llu votes=%zu\n",
+                           (unsigned long long)batch.round,
+                           qc.votes.size());
+                    break;
+                }
             }
             if (!engine.Commit(batch, qc))
             {
@@ -1032,25 +1036,28 @@ int main(int argc, char** argv)
                 return;
             }
             const uint64_t auth_round = (last_committed_round == 0) ? 1 : last_committed_round;
-            ValidatorEpoch auth_epoch;
-            if (!vset.GetEpochForRound(auth_round, &auth_epoch))
+            if (auth_round > economics_policy.genesis_bootstrap_rounds)
             {
-                printf("drop peer_list auth_epoch_missing round=%llu\n", (unsigned long long)auth_round);
-                return;
-            }
-            bool authorized = false;
-            for (size_t i = 0; i < auth_epoch.validators.size(); ++i)
-            {
-                if (memcmp(auth_epoch.validators[i].validator_id.v, advertiser_id.v, 32) == 0)
+                ValidatorEpoch auth_epoch;
+                if (!vset.GetEpochForRound(auth_round, &auth_epoch))
                 {
-                    authorized = true;
-                    break;
+                    printf("drop peer_list auth_epoch_missing round=%llu\n", (unsigned long long)auth_round);
+                    return;
                 }
-            }
-            if (!authorized)
-            {
-                printf("drop peer_list unauthorized advertiser=%s\n", Hex32(advertiser_id).c_str());
-                return;
+                bool authorized = false;
+                for (size_t i = 0; i < auth_epoch.validators.size(); ++i)
+                {
+                    if (memcmp(auth_epoch.validators[i].validator_id.v, advertiser_id.v, 32) == 0)
+                    {
+                        authorized = true;
+                        break;
+                    }
+                }
+                if (!authorized)
+                {
+                    printf("drop peer_list unauthorized advertiser=%s\n", Hex32(advertiser_id).c_str());
+                    return;
+                }
             }
             size_t added = 0;
             for (size_t i = 0; i < peers.size(); ++i)
@@ -1332,11 +1339,14 @@ int main(int argc, char** argv)
             qc.round = itb->second.round;
             qc.batch_hash = itb->second.batch_hash;
             qc.votes = known_votes[k];
-            ValidatorEpoch epoch;
-            if (!vset.GetEpochForRound(itb->second.round, &epoch))
-                return;
-            if (!HasSupermajorityPower(epoch, qc))
-                return;
+            if (itb->second.round > economics_policy.genesis_bootstrap_rounds)
+            {
+                ValidatorEpoch epoch;
+                if (!vset.GetEpochForRound(itb->second.round, &epoch))
+                    return;
+                if (!HasSupermajorityPower(epoch, qc))
+                    return;
+            }
             std::vector<uint8_t> commit_payload;
             if (!SerializeCommitPayload(itb->second, qc, &commit_payload))
                 return;
@@ -1374,16 +1384,19 @@ int main(int argc, char** argv)
                 printf("drop commit qc_batch_mismatch\n");
                 return;
             }
-            ValidatorEpoch epoch;
-            if (!vset.GetEpochForRound(batch.round, &epoch))
+            if (batch.round > economics_policy.genesis_bootstrap_rounds)
             {
-                printf("drop commit epoch_missing\n");
-                return;
-            }
-            if (!VerifyQuorumCertificate(epoch, qc, batch.round, batch.batch_hash, vote_verifier))
-            {
-                printf("drop commit qc_invalid\n");
-                return;
+                ValidatorEpoch epoch;
+                if (!vset.GetEpochForRound(batch.round, &epoch))
+                {
+                    printf("drop commit epoch_missing\n");
+                    return;
+                }
+                if (!VerifyQuorumCertificate(epoch, qc, batch.round, batch.batch_hash, vote_verifier))
+                {
+                    printf("drop commit qc_invalid\n");
+                    return;
+                }
             }
             if (!engine.Commit(batch, qc))
             {

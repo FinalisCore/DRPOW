@@ -23,6 +23,7 @@ struct EconomicsPolicy {
     uint64_t target_mints_per_window;
     uint64_t target_adjust_up_ppm_limit;
     uint64_t target_adjust_down_ppm_limit;
+    uint64_t genesis_bootstrap_rounds;
 };
 
 EconomicsPolicy DefaultEconomicsPolicy();
