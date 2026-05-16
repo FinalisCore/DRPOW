@@ -52,6 +52,7 @@ install_liboqs_if_needed() {
 build_binaries() {
   need_cmd make
   echo "building rpov2 binaries (PQ-only)..."
+  rm -f "${NODE_BIN}" "${CLI_BIN}"
   PKG_CONFIG_PATH="${LIBOQS_PC_DIR}" make -C "${ROOT_DIR}" USE_LIBOQS=1 rpov2_node rpov2_cli
 }
 
