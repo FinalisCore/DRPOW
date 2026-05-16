@@ -913,9 +913,10 @@ int main(int argc, char** argv)
     const std::string signer_key_file = cfg.data_dir + "/signer_privkey.hex";
     uint8_t signer_priv[32];
     bool have_signer = false;
+    const bool config_provided_signer = !cfg.signer_privkey_hex.empty();
     if (!cfg.signer_privkey_hex.empty())
         have_signer = HexTo32(cfg.signer_privkey_hex, signer_priv);
-    if (!have_signer)
+    if (!have_signer && !config_provided_signer)
     {
         std::ifstream kin(signer_key_file.c_str());
         std::string line;
@@ -925,7 +926,7 @@ int main(int argc, char** argv)
             (void)EnsureOwnerOnlyFile(signer_key_file);
         }
     }
-    if (!have_signer)
+    if (!have_signer && !config_provided_signer)
     {
         if (!FillRandom(signer_priv, sizeof(signer_priv)))
         {
@@ -1146,91 +1147,93 @@ int main(int argc, char** argv)
         if (round == 0)
             return true;
         const uint64_t epoch = (round - 1) / kRuntimeEpochLength;
-        ValidatorEpoch existing;
-        const bool have_existing = vset.GetEpochForRound(round, &existing);
-        ValidatorEpoch prev_epoch;
-        bool have_prev_epoch = (epoch > 0) && vset.GetEpochForRound((epoch - 1) * kRuntimeEpochLength + 1, &prev_epoch);
-        std::vector<Validator> next_vals;
-        if (epoch == 0)
+        // Ensure all intermediate epochs are installed contiguously up to target epoch.
+        for (uint64_t e = 0; e <= epoch; ++e)
         {
-            next_vals = vals;
-        }
-        else
-        {
-            if (!have_prev_epoch)
-            {
-                printf("epoch_transition_reject phase=%s epoch=%llu reason=missing_prev_epoch\n",
-                       phase ? phase : "-",
-                       (unsigned long long)epoch);
-                return false;
-            }
-            next_vals = DeriveEpochValidatorsFromPowHistory(store,
-                                                            have_prev_epoch ? &prev_epoch : NULL,
-                                                            epoch,
-                                                            kRuntimeEpochLength,
-                                                            kEpochValidatorCap);
-        }
-        if (next_vals.empty())
-        {
-            printf("epoch_transition_reject phase=%s epoch=%llu reason=empty_next_set\n",
-                   phase ? phase : "-",
-                   (unsigned long long)epoch);
-            return false;
-        }
-        if (have_existing)
-        {
-            if (!SameValidatorSetOrdered(existing.validators, next_vals))
-            {
-                printf("epoch_transition_reject phase=%s epoch=%llu reason=set_mismatch existing=%zu expected=%zu\n",
-                       phase ? phase : "-",
-                       (unsigned long long)epoch,
-                       existing.validators.size(),
-                       next_vals.size());
-                return false;
-            }
-            return true;
-        }
-        if (!vset.InstallEpoch(epoch, next_vals))
-        {
-            printf("epoch_transition_reject phase=%s epoch=%llu reason=install_failed\n",
-                   phase ? phase : "-",
-                   (unsigned long long)epoch);
-            return false;
-        }
-        Bytes32 next_target;
-        if (!ComputeExpectedTargetForRoundNode(store, round, economics_policy, &next_target))
-            memset(next_target.v, 0, 32);
-        Bytes32 seed_root;
-        if (!store.ReadStateRoot(&seed_root))
-            memset(seed_root.v, 0, 32);
-        size_t prev_count = 0;
-        size_t retained_count = 0;
-        size_t newcomer_count = next_vals.size();
-        if (have_prev_epoch)
-        {
-            prev_count = prev_epoch.validators.size();
-            std::set<std::string> prev_ids;
-            for (size_t i = 0; i < prev_epoch.validators.size(); ++i)
-                prev_ids.insert(std::string((const char*)prev_epoch.validators[i].validator_id.v, 32));
-            for (size_t i = 0; i < next_vals.size(); ++i)
-            {
-                if (prev_ids.count(std::string((const char*)next_vals[i].validator_id.v, 32)))
-                    retained_count += 1;
-            }
-            if (retained_count <= newcomer_count)
-                newcomer_count -= retained_count;
+            const uint64_t probe_round = e * kRuntimeEpochLength + 1;
+            ValidatorEpoch installed;
+            if (vset.GetEpochForRound(probe_round, &installed))
+                continue;
+            ValidatorEpoch prev_epoch;
+            const bool have_prev_epoch = (e > 0) && vset.GetEpochForRound((e - 1) * kRuntimeEpochLength + 1, &prev_epoch);
+            std::vector<Validator> next_vals;
+            if (e == 0)
+                next_vals = vals;
             else
-                newcomer_count = 0;
+            {
+                if (!have_prev_epoch)
+                {
+                    printf("epoch_transition_reject phase=%s epoch=%llu reason=missing_prev_epoch\n",
+                           phase ? phase : "-",
+                           (unsigned long long)e);
+                    return false;
+                }
+                next_vals = DeriveEpochValidatorsFromPowHistory(store,
+                                                                &prev_epoch,
+                                                                e,
+                                                                kRuntimeEpochLength,
+                                                                kEpochValidatorCap);
+            }
+            if (next_vals.empty())
+            {
+                printf("epoch_transition_reject phase=%s epoch=%llu reason=empty_next_set\n",
+                       phase ? phase : "-",
+                       (unsigned long long)e);
+                return false;
+            }
+            if (!vset.InstallEpoch(e, next_vals))
+            {
+                printf("epoch_transition_reject phase=%s epoch=%llu reason=install_failed\n",
+                       phase ? phase : "-",
+                       (unsigned long long)e);
+                return false;
+            }
+            if (e != epoch)
+                continue;
+
+            Bytes32 next_target;
+            if (!ComputeExpectedTargetForRoundNode(store, round, economics_policy, &next_target))
+                memset(next_target.v, 0, 32);
+            Bytes32 seed_root;
+            if (!store.ReadStateRoot(&seed_root))
+                memset(seed_root.v, 0, 32);
+            size_t prev_count = 0;
+            size_t retained_count = 0;
+            size_t newcomer_count = next_vals.size();
+            if (have_prev_epoch)
+            {
+                prev_count = prev_epoch.validators.size();
+                std::set<std::string> prev_ids;
+                for (size_t i = 0; i < prev_epoch.validators.size(); ++i)
+                    prev_ids.insert(std::string((const char*)prev_epoch.validators[i].validator_id.v, 32));
+                for (size_t i = 0; i < next_vals.size(); ++i)
+                {
+                    if (prev_ids.count(std::string((const char*)next_vals[i].validator_id.v, 32)))
+                        retained_count += 1;
+                }
+                if (retained_count <= newcomer_count)
+                    newcomer_count -= retained_count;
+                else
+                    newcomer_count = 0;
+            }
+            printf("epoch_transition epoch=%llu round_start=%llu validators=%zu retained=%zu newcomers=%zu prev=%zu target=%s seed_root=%s\n",
+                   (unsigned long long)e,
+                   (unsigned long long)(e * kRuntimeEpochLength + 1),
+                   next_vals.size(),
+                   retained_count,
+                   newcomer_count,
+                   prev_count,
+                   Hex32(next_target).c_str(),
+                   Hex32(seed_root).c_str());
         }
-        printf("epoch_transition epoch=%llu round_start=%llu validators=%zu retained=%zu newcomers=%zu prev=%zu target=%s seed_root=%s\n",
-               (unsigned long long)epoch,
-               (unsigned long long)(epoch * kRuntimeEpochLength + 1),
-               next_vals.size(),
-               retained_count,
-               newcomer_count,
-               prev_count,
-               Hex32(next_target).c_str(),
-               Hex32(seed_root).c_str());
+        ValidatorEpoch existing;
+        if (!vset.GetEpochForRound(round, &existing))
+        {
+            printf("epoch_transition_reject phase=%s epoch=%llu reason=missing_after_install\n",
+                   phase ? phase : "-",
+                   (unsigned long long)epoch);
+            return false;
+        }
         return true;
     };
     std::function<bool(const Bytes32&, uint64_t)> IsValidatorForRound = [&](const Bytes32& validator_id, uint64_t round) {

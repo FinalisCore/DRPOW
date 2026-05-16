@@ -19,6 +19,7 @@ NETWORK_MAGIC_HEX="${NETWORK_MAGIC_HEX:-0x52504f57}"
 DURATION_SEC="${DURATION_SEC:-0}"
 AUTOPROPOSE="${AUTOPROPOSE:-0}"
 AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-3}"
+SIGNER_PRIVKEY_HEX="${SIGNER_PRIVKEY_HEX:-}"
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -76,6 +77,9 @@ autopropose_interval_sec=${AUTOPROPOSE_INTERVAL_SEC}
 CFG
   if [ -n "${SEED_PEER}" ]; then
     echo "peers=${SEED_PEER}" >> "${ROOT_DIR}/global_testnet.conf"
+  fi
+  if [ -n "${SIGNER_PRIVKEY_HEX}" ]; then
+    echo "signer_privkey_hex=${SIGNER_PRIVKEY_HEX}" >> "${ROOT_DIR}/global_testnet.conf"
   fi
   if [ -n "${PUBLIC_ENDPOINT}" ]; then
     echo "public_endpoint=${PUBLIC_ENDPOINT}" >> "${ROOT_DIR}/global_testnet.conf"

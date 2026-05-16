@@ -961,6 +961,7 @@ static int MempoolDemo()
 int main(int argc, char** argv)
 {
     const char* kDefaultWalletDir = "./data_wallet";
+    const char* kDefaultNodeDataDir = "./data_seed";
     if (argc < 2)
     {
         Usage(argv[0]);
@@ -979,7 +980,8 @@ int main(int argc, char** argv)
         const std::string subcmd = argv[2];
         if (subcmd == "init" || subcmd == "show")
         {
-            const char* dir = (argc >= 4) ? argv[3] : kDefaultWalletDir;
+            const char* default_dir = (subcmd == "show") ? kDefaultNodeDataDir : kDefaultWalletDir;
+            const char* dir = (argc >= 4) ? argv[3] : default_dir;
             const char* magic_arg = (argc >= 5) ? argv[4] : NULL;
             int rc = WalletIdentityCmd(subcmd.c_str(), dir, ParseMagic(magic_arg));
             if (rc == 1)
@@ -989,7 +991,7 @@ int main(int argc, char** argv)
 
         if (subcmd == "info")
         {
-            const char* dir = (argc >= 4) ? argv[3] : kDefaultWalletDir;
+            const char* dir = (argc >= 4) ? argv[3] : kDefaultNodeDataDir;
             const char* magic_arg = (argc >= 5) ? argv[4] : NULL;
             const char* registry_file = (argc >= 6) ? argv[5] : NULL;
             return WalletInfoCmd(dir, ParseMagic(magic_arg), registry_file);
@@ -1073,14 +1075,14 @@ int main(int argc, char** argv)
     }
     if (cmd == "getbalance")
     {
-        const char* dir = (argc >= 3) ? argv[2] : kDefaultWalletDir;
+        const char* dir = (argc >= 3) ? argv[2] : kDefaultNodeDataDir;
         const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
         const char* registry_file = (argc >= 5) ? argv[4] : NULL;
         return GetBalanceCmd(dir, ParseMagic(magic_arg), registry_file);
     }
     if (cmd == "getutxo")
     {
-        const char* dir = (argc >= 3) ? argv[2] : kDefaultWalletDir;
+        const char* dir = (argc >= 3) ? argv[2] : kDefaultNodeDataDir;
         const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
         const char* registry_file = (argc >= 5) ? argv[4] : NULL;
         return GetUtxoCmd(dir, ParseMagic(magic_arg), registry_file);
