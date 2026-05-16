@@ -224,6 +224,79 @@ static std::vector<Validator> DeriveEpochValidatorsDeterministic(const std::vect
     return out;
 }
 
+struct MinerCountEntry {
+    Bytes32 miner;
+    uint64_t count;
+};
+
+static bool MinerCountEntryLess(const MinerCountEntry& a, const MinerCountEntry& b)
+{
+    if (a.count != b.count)
+        return a.count > b.count;
+    return memcmp(a.miner.v, b.miner.v, 32) < 0;
+}
+
+static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const RegistryStateStore& store,
+                                                                  const ValidatorEpoch* prev_epoch,
+                                                                  uint64_t epoch,
+                                                                  uint64_t epoch_length,
+                                                                  size_t max_validators)
+{
+    std::vector<Validator> out;
+    if (epoch == 0 || epoch_length == 0 || max_validators == 0)
+        return out;
+
+    const uint64_t prev_start = (epoch - 1) * epoch_length + 1;
+    std::vector<RoundCommitRecord> recs;
+    if (!store.ExportVerifiedCommitRecordsFromRound(prev_start, (size_t)epoch_length, &recs))
+    {
+        if (prev_epoch)
+            return prev_epoch->validators;
+        return out;
+    }
+
+    std::map<std::string, uint64_t> counts;
+    for (size_t i = 0; i < recs.size(); ++i)
+    {
+        MintTx mint;
+        size_t off = 0;
+        if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                  recs[i].consensus_proof.size(),
+                                  &off,
+                                  &mint) ||
+            off != recs[i].consensus_proof.size())
+        {
+            continue;
+        }
+        std::string k((const char*)mint.miner_pubkey.v, 32);
+        counts[k] += 1;
+    }
+
+    std::vector<MinerCountEntry> ranked;
+    ranked.reserve(counts.size());
+    for (std::map<std::string, uint64_t>::const_iterator it = counts.begin(); it != counts.end(); ++it)
+    {
+        MinerCountEntry e;
+        memset(e.miner.v, 0, 32);
+        memcpy(e.miner.v, it->first.data(), 32);
+        e.count = it->second;
+        ranked.push_back(e);
+    }
+    std::sort(ranked.begin(), ranked.end(), MinerCountEntryLess);
+
+    for (size_t i = 0; i < ranked.size() && out.size() < max_validators; ++i)
+    {
+        Validator v;
+        v.validator_id = ranked[i].miner;
+        v.voting_power = 1;
+        out.push_back(v);
+    }
+
+    if (out.empty() && prev_epoch && !prev_epoch->validators.empty())
+        return prev_epoch->validators;
+    return out;
+}
+
 static bool ComputeRecordHashV1Local(const RoundCommitRecord& record, Bytes32* out)
 {
     if (!out)
@@ -709,15 +782,31 @@ int main(int argc, char** argv)
         if (vset.GetEpochForRound(round, &existing))
             return;
         const uint64_t epoch = (round - 1) / kRuntimeEpochLength;
-        Bytes32 seed_root;
-        if (!store.ReadStateRoot(&seed_root))
-            memset(seed_root.v, 0, 32);
-        std::vector<Validator> next_vals = DeriveEpochValidatorsDeterministic(vals, seed_root, epoch);
+        ValidatorEpoch prev_epoch;
+        bool have_prev_epoch = (epoch > 0) && vset.GetEpochForRound((epoch - 1) * kRuntimeEpochLength + 1, &prev_epoch);
+        std::vector<Validator> next_vals;
+        if (epoch == 0)
+        {
+            next_vals = vals;
+        }
+        else
+        {
+            next_vals = DeriveEpochValidatorsFromPowHistory(store,
+                                                            have_prev_epoch ? &prev_epoch : NULL,
+                                                            epoch,
+                                                            kRuntimeEpochLength,
+                                                            vals.size());
+        }
+        if (next_vals.empty())
+            return;
         if (!vset.InstallEpoch(epoch, next_vals))
             return;
         Bytes32 next_target;
         if (!ComputeExpectedTargetForRoundNode(store, round, economics_policy, &next_target))
             memset(next_target.v, 0, 32);
+        Bytes32 seed_root;
+        if (!store.ReadStateRoot(&seed_root))
+            memset(seed_root.v, 0, 32);
         printf("epoch_transition epoch=%llu round_start=%llu validators=%zu target=%s seed_root=%s\n",
                (unsigned long long)epoch,
                (unsigned long long)(epoch * kRuntimeEpochLength + 1),
