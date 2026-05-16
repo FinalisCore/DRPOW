@@ -31,6 +31,8 @@ static void Usage(const char* bin)
     printf("  %s address validate <address> [network_magic_hex]\n", bin);
     printf("  %s mempool demo\n", bin);
     printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", bin);
+    printf("  %s getbalance [data_dir] [network_magic_hex] [registry_file]\n", bin);
+    printf("  %s getutxo [data_dir] [network_magic_hex] [registry_file]\n", bin);
 }
 
 static void WalletUsage(const char* bin)
@@ -421,6 +423,71 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     return 0;
 }
 
+static int GetBalanceCmd(const char* dir, uint32_t magic, const char* registry_file_opt)
+{
+    std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
+    if (!crypto.get())
+    {
+        printf("crypto_backend_select_failed\n");
+        return 2;
+    }
+    WalletIdentity id;
+    std::string err;
+    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), &id, &err))
+    {
+        printf("wallet_error: %s\n", err.c_str());
+        return 3;
+    }
+    std::string registry_file = registry_file_opt ? registry_file_opt : "";
+    if (registry_file.empty())
+        registry_file = std::string(dir) + "/registry.hex";
+    std::vector<LocalUtxo> utxos;
+    uint64_t balance = 0;
+    if (!LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance))
+    {
+        printf("getbalance_error: registry_unavailable path=%s\n", registry_file.c_str());
+        return 4;
+    }
+    printf("%llu\n", (unsigned long long)balance);
+    return 0;
+}
+
+static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file_opt)
+{
+    std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
+    if (!crypto.get())
+    {
+        printf("crypto_backend_select_failed\n");
+        return 2;
+    }
+    WalletIdentity id;
+    std::string err;
+    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), &id, &err))
+    {
+        printf("wallet_error: %s\n", err.c_str());
+        return 3;
+    }
+    std::string registry_file = registry_file_opt ? registry_file_opt : "";
+    if (registry_file.empty())
+        registry_file = std::string(dir) + "/registry.hex";
+    std::vector<LocalUtxo> utxos;
+    uint64_t balance = 0;
+    if (!LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance))
+    {
+        printf("getutxo_error: registry_unavailable path=%s\n", registry_file.c_str());
+        return 4;
+    }
+    for (size_t i = 0; i < utxos.size(); ++i)
+    {
+        printf("coin_id=%s value=%llu owner=%s\n",
+               Hex(utxos[i].coin_id.v, 32).c_str(),
+               (unsigned long long)utxos[i].value,
+               Hex(utxos[i].owner_pubkey.v, 32).c_str());
+    }
+    printf("utxo_count=%zu balance=%llu\n", utxos.size(), (unsigned long long)balance);
+    return 0;
+}
+
 static int WalletSendCmd(const char* to_address,
                          uint64_t amount,
                          uint64_t fee,
@@ -690,6 +757,20 @@ int main(int argc, char** argv)
         }
         uint32_t magic = ParseMagic(argc >= 6 ? argv[5] : NULL);
         return TxSubmitCmd(argv[3], argv[4], magic);
+    }
+    if (cmd == "getbalance")
+    {
+        const char* dir = (argc >= 3) ? argv[2] : kDefaultWalletDir;
+        const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
+        const char* registry_file = (argc >= 5) ? argv[4] : NULL;
+        return GetBalanceCmd(dir, ParseMagic(magic_arg), registry_file);
+    }
+    if (cmd == "getutxo")
+    {
+        const char* dir = (argc >= 3) ? argv[2] : kDefaultWalletDir;
+        const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
+        const char* registry_file = (argc >= 5) ? argv[4] : NULL;
+        return GetUtxoCmd(dir, ParseMagic(magic_arg), registry_file);
     }
 
     Usage(argv[0]);
