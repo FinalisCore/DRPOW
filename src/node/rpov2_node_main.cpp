@@ -2484,6 +2484,46 @@ int main(int argc, char** argv)
                             known_vote_ids[k].insert(voter_key);
                             known_votes[k].push_back(vote);
                         }
+                        QuorumCertificate local_qc;
+                        local_qc.round = batch.round;
+                        local_qc.batch_hash = batch.batch_hash;
+                        local_qc.votes = known_votes[k];
+                        bool local_supermajority = true;
+                        if (batch.round > economics_policy.genesis_bootstrap_rounds)
+                        {
+                            ValidatorEpoch epoch;
+                            if (!vset.GetEpochForRound(batch.round, &epoch))
+                                local_supermajority = false;
+                            else
+                                local_supermajority = HasSupermajorityPower(epoch, local_qc);
+                        }
+                        if (local_supermajority && batch.round > last_committed_round)
+                        {
+                            if (engine.Commit(batch, local_qc))
+                            {
+                                last_committed_round = batch.round;
+                                last_progress_round = last_committed_round;
+                                last_progress_time = time(NULL);
+                                known_batches.erase(Bytes32Key(batch.batch_hash));
+                                known_votes.erase(Bytes32Key(batch.batch_hash));
+                                known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+                                const uint64_t minted = SumBatchMintValue(batch);
+                                const uint64_t fees = SumBatchFees(batch);
+                                const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
+                                const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
+                                const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
+                                printf("commit ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
+                                       (unsigned long long)batch.round,
+                                       batch.spends.size(),
+                                       batch.mints.size(),
+                                       (unsigned long long)minted,
+                                       (unsigned long long)fees,
+                                       (unsigned long long)subsidy,
+                                       miner_hex.c_str(),
+                                       target_hex.c_str());
+                                BroadcastSyncStatus();
+                            }
+                        }
                         std::vector<uint8_t> vote_payload;
                         if (SerializeVotePayload(vote, &vote_payload))
                         {
