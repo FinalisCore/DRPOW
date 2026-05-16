@@ -98,7 +98,29 @@ static bool FillRandom(uint8_t* out, size_t n)
     return in.good();
 }
 
-static bool LoadPeerFile(const std::string& path, std::vector<std::string>* out)
+struct PeerCacheRecord {
+    std::string endpoint;
+    uint64_t last_seen_round;
+};
+
+static bool ParsePeerCacheLine(const std::string& line, PeerCacheRecord* out)
+{
+    if (!out || line.empty())
+        return false;
+    out->endpoint.clear();
+    out->last_seen_round = 0;
+    std::istringstream iss(line);
+    std::string ep;
+    if (!(iss >> ep))
+        return false;
+    std::string rs;
+    if (iss >> rs)
+        out->last_seen_round = (uint64_t)strtoull(rs.c_str(), NULL, 10);
+    out->endpoint = ep;
+    return true;
+}
+
+static bool LoadPeerCacheRecords(const std::string& path, std::vector<PeerCacheRecord>* out)
 {
     if (!out)
         return false;
@@ -109,19 +131,23 @@ static bool LoadPeerFile(const std::string& path, std::vector<std::string>* out)
     std::string line;
     while (std::getline(in, line))
     {
-        if (!line.empty())
-            out->push_back(line);
+        PeerCacheRecord r;
+        if (!ParsePeerCacheLine(line, &r))
+            continue;
+        if (r.endpoint.empty())
+            continue;
+        out->push_back(r);
     }
     return true;
 }
 
-static bool SavePeerFile(const std::string& path, const std::vector<std::string>& peers)
+static bool SavePeerCacheRecords(const std::string& path, const std::vector<PeerCacheRecord>& records)
 {
     std::ofstream out(path.c_str(), std::ios::trunc);
     if (!out.good())
         return false;
-    for (size_t i = 0; i < peers.size(); ++i)
-        out << peers[i] << "\n";
+    for (size_t i = 0; i < records.size(); ++i)
+        out << records[i].endpoint << " " << (unsigned long long)records[i].last_seen_round << "\n";
     return out.good();
 }
 
@@ -140,6 +166,39 @@ static void CanonicalizePeerList(std::vector<std::string>* peers)
         return;
     std::sort(peers->begin(), peers->end());
     peers->erase(std::unique(peers->begin(), peers->end()), peers->end());
+}
+
+static void CompactPeerCacheRecords(std::vector<PeerCacheRecord>* records, uint64_t local_round, uint64_t keep_window_rounds)
+{
+    if (!records)
+        return;
+    std::map<std::string, uint64_t> best;
+    for (size_t i = 0; i < records->size(); ++i)
+    {
+        const PeerCacheRecord& r = (*records)[i];
+        if (!IsValidEndpoint(r.endpoint))
+            continue;
+        std::map<std::string, uint64_t>::iterator it = best.find(r.endpoint);
+        if (it == best.end() || r.last_seen_round > it->second)
+            best[r.endpoint] = r.last_seen_round;
+    }
+    records->clear();
+    uint64_t cutoff = 0;
+    bool use_cutoff = false;
+    if (local_round >= keep_window_rounds)
+    {
+        cutoff = local_round - keep_window_rounds;
+        use_cutoff = true;
+    }
+    for (std::map<std::string, uint64_t>::const_iterator it = best.begin(); it != best.end(); ++it)
+    {
+        if (use_cutoff && it->second < cutoff)
+            continue;
+        PeerCacheRecord r;
+        r.endpoint = it->first;
+        r.last_seen_round = it->second;
+        records->push_back(r);
+    }
 }
 
 static bool BuildPeerListSignBytes(uint64_t advertised_round,
@@ -205,6 +264,22 @@ static bool ComputeExpectedTargetForRoundNode(const RegistryStateStore& store,
                                       policy.min_target,
                                       policy.max_target,
                                       out_target);
+}
+
+static uint64_t SumBatchMintValue(const RoundBatch& batch)
+{
+    uint64_t s = 0;
+    for (size_t i = 0; i < batch.mints.size(); ++i)
+        s += batch.mints[i].output.value;
+    return s;
+}
+
+static uint64_t SumBatchFees(const RoundBatch& batch)
+{
+    uint64_t s = 0;
+    for (size_t i = 0; i < batch.spends.size(); ++i)
+        s += batch.spends[i].fee;
+    return s;
 }
 
 static std::vector<Validator> DeriveEpochValidatorsDeterministic(const std::vector<Validator>& base, const Bytes32& seed, uint64_t epoch)
@@ -922,29 +997,58 @@ int main(int argc, char** argv)
     };
 
     const std::string discovered_peers_file = cfg.data_dir + "/discovered_peers.txt";
-    std::vector<std::string> persisted_peers;
-    (void)LoadPeerFile(discovered_peers_file, &persisted_peers);
+    const uint64_t kPeerCacheKeepRounds = 20;
+    std::vector<PeerCacheRecord> persisted_records;
+    (void)LoadPeerCacheRecords(discovered_peers_file, &persisted_records);
+    const size_t peer_cache_before_startup = persisted_records.size();
+    CompactPeerCacheRecords(&persisted_records, last_committed_round, kPeerCacheKeepRounds);
+    const size_t peer_cache_after_startup = persisted_records.size();
+    const uint64_t peer_cache_cutoff_startup =
+        (last_committed_round >= kPeerCacheKeepRounds) ? (last_committed_round - kPeerCacheKeepRounds) : 0;
+    printf("peer_cache_compact before=%zu after=%zu cutoff_round=%llu\n",
+           peer_cache_before_startup,
+           peer_cache_after_startup,
+           (unsigned long long)peer_cache_cutoff_startup);
+    (void)SavePeerCacheRecords(discovered_peers_file, persisted_records);
     std::set<std::string> bootstrap_peers(cfg.peers.begin(), cfg.peers.end());
-    for (size_t i = 0; i < persisted_peers.size(); ++i)
-        if (IsValidEndpoint(persisted_peers[i]))
-            bootstrap_peers.insert(persisted_peers[i]);
+    std::map<std::string, uint64_t> peer_last_seen_round;
+    for (size_t i = 0; i < persisted_records.size(); ++i)
+    {
+        if (!IsValidEndpoint(persisted_records[i].endpoint))
+            continue;
+        bootstrap_peers.insert(persisted_records[i].endpoint);
+        peer_last_seen_round[persisted_records[i].endpoint] = persisted_records[i].last_seen_round;
+    }
     std::vector<std::string> all_bootstrap(bootstrap_peers.begin(), bootstrap_peers.end());
     P2PReactor reactor(cfg.bind_port, all_bootstrap, signer_id);
 
     std::function<void()> PersistKnownPeers = [&]() {
         std::vector<std::string> peers = reactor.KnownPeers();
-        std::vector<std::string> clean;
+        std::vector<PeerCacheRecord> clean;
         for (size_t i = 0; i < peers.size(); ++i)
         {
             if (!IsValidEndpoint(peers[i]))
                 continue;
             if (!cfg.public_endpoint.empty() && peers[i] == cfg.public_endpoint)
                 continue;
-            clean.push_back(peers[i]);
+            PeerCacheRecord r;
+            r.endpoint = peers[i];
+            r.last_seen_round = last_committed_round;
+            std::map<std::string, uint64_t>::const_iterator it = peer_last_seen_round.find(peers[i]);
+            if (it != peer_last_seen_round.end() && it->second > r.last_seen_round)
+                r.last_seen_round = it->second;
+            clean.push_back(r);
         }
-        std::sort(clean.begin(), clean.end());
-        clean.erase(std::unique(clean.begin(), clean.end()), clean.end());
-        (void)SavePeerFile(discovered_peers_file, clean);
+        const size_t before = clean.size();
+        CompactPeerCacheRecords(&clean, last_committed_round, kPeerCacheKeepRounds);
+        const size_t after = clean.size();
+        const uint64_t cutoff =
+            (last_committed_round >= kPeerCacheKeepRounds) ? (last_committed_round - kPeerCacheKeepRounds) : 0;
+        printf("peer_cache_compact before=%zu after=%zu cutoff_round=%llu\n",
+               before,
+               after,
+               (unsigned long long)cutoff);
+        (void)SavePeerCacheRecords(discovered_peers_file, clean);
     };
     std::function<void()> BroadcastSyncStatus = [&]() {
         Bytes32 root;
@@ -968,7 +1072,10 @@ int main(int argc, char** argv)
         {
             std::string ep = reactor.PeerEndpoint(peer_fd);
             if (IsValidEndpoint(ep))
+            {
                 reactor.AddPeer(ep);
+                peer_last_seen_round[ep] = last_committed_round;
+            }
             PersistKnownPeers();
             BroadcastSyncStatus();
             std::vector<std::string> advertise = reactor.KnownPeers();
@@ -1067,6 +1174,9 @@ int main(int argc, char** argv)
                 if (!cfg.public_endpoint.empty() && peers[i] == cfg.public_endpoint)
                     continue;
                 reactor.AddPeer(peers[i]);
+                std::map<std::string, uint64_t>::iterator it_seen = peer_last_seen_round.find(peers[i]);
+                if (it_seen == peer_last_seen_round.end() || advertised_round > it_seen->second)
+                    peer_last_seen_round[peers[i]] = advertised_round;
                 added++;
             }
             if (added > 0)
@@ -1408,7 +1518,20 @@ int main(int argc, char** argv)
             known_batches.erase(Bytes32Key(batch.batch_hash));
             known_votes.erase(Bytes32Key(batch.batch_hash));
             known_vote_ids.erase(Bytes32Key(batch.batch_hash));
-            printf("commit ok round=%llu\n", (unsigned long long)batch.round);
+            const uint64_t minted = SumBatchMintValue(batch);
+            const uint64_t fees = SumBatchFees(batch);
+            const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
+            const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
+            const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
+            printf("commit ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
+                   (unsigned long long)batch.round,
+                   batch.spends.size(),
+                   batch.mints.size(),
+                   (unsigned long long)minted,
+                   (unsigned long long)fees,
+                   (unsigned long long)subsidy,
+                   miner_hex.c_str(),
+                   target_hex.c_str());
             BroadcastSyncStatus();
         }
     });
@@ -1465,12 +1588,19 @@ int main(int argc, char** argv)
                     last_autopropose_tick = time(NULL);
                     continue;
                 }
+                const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
                 mint.target = expected_target;
                 memset(mint.output.range_proof.v, 0, 64);
                 mint.mint_nonce = (uint64_t)time(NULL);
                 mint.miner_pubkey = signer_id;
                 mint.signature = BuildMintSigLocal(*crypto, signer_priv, mint);
                 batch.mints.push_back(mint);
+                printf("autopropose_prepare round=%llu subsidy=%llu mint_value=%llu target=%s miner=%s\n",
+                       (unsigned long long)batch.round,
+                       (unsigned long long)subsidy,
+                       (unsigned long long)mint.output.value,
+                       Hex32(mint.target).c_str(),
+                       Hex32(mint.miner_pubkey).c_str());
                 if (!(BuildBatchHashLocal(batch, &batch.batch_hash) && engine.Propose(batch)))
                 {
                     last_autopropose_tick = time(NULL);
@@ -1528,7 +1658,12 @@ int main(int argc, char** argv)
                         }
                     }
                 }
-                printf("autopropose round=%llu\n", (unsigned long long)batch.round);
+                printf("autopropose round=%llu spends=%zu mints=%zu fees=%llu minted=%llu\n",
+                       (unsigned long long)batch.round,
+                       batch.spends.size(),
+                       batch.mints.size(),
+                       (unsigned long long)SumBatchFees(batch),
+                       (unsigned long long)SumBatchMintValue(batch));
             }
             last_autopropose_tick = time(NULL);
         }
