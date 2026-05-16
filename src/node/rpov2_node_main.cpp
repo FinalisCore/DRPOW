@@ -1028,6 +1028,7 @@ int main(int argc, char** argv)
     std::map<std::string, std::set<std::string> > known_vote_ids;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     std::map<int, uint64_t> peer_last_round;
+    std::map<int, uint64_t> peer_last_lower_round_log_local;
     time_t last_progress_time = time(NULL);
     uint64_t last_progress_round = last_committed_round;
     const std::string sync_cache = cfg.data_dir + "/sync_commit.log";
@@ -1792,6 +1793,11 @@ int main(int argc, char** argv)
         }
         if (!peer_node_id_by_fd.count(peer_fd))
         {
+            if (env.msg_type == WIRE_MSG_SYNC_STATUS)
+            {
+                // Joiners may emit sync status during handshake churn; ignore until authenticated.
+                return;
+            }
             printf("drop unauthenticated fd=%d msg_type=%u\n", peer_fd, (unsigned)env.msg_type);
             penalize_peer(peer_fd, 8, "unauthenticated_message");
             reactor.Disconnect(peer_fd);
@@ -1886,10 +1892,22 @@ int main(int argc, char** argv)
             }
             if (peer_round < last_committed_round)
             {
-                printf("ignore peer=%d lower_round=%llu local=%llu\n",
-                       peer_fd,
-                       (unsigned long long)peer_round,
-                       (unsigned long long)last_committed_round);
+                std::map<int, uint64_t>::iterator it_log = peer_last_lower_round_log_local.find(peer_fd);
+                bool should_log = (it_log == peer_last_lower_round_log_local.end());
+                if (!should_log)
+                {
+                    const uint64_t prev_local = it_log->second;
+                    // Rate limit repeated lower-round logs from same peer.
+                    should_log = (last_committed_round >= prev_local + 10);
+                }
+                if (should_log)
+                {
+                    printf("ignore peer=%d lower_round=%llu local=%llu\n",
+                           peer_fd,
+                           (unsigned long long)peer_round,
+                           (unsigned long long)last_committed_round);
+                    peer_last_lower_round_log_local[peer_fd] = last_committed_round;
+                }
                 return;
             }
             peer_last_round[peer_fd] = peer_round;

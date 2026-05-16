@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <glob.h>
 #include <sys/stat.h>
+#include <stdlib.h>
 
 #include <fstream>
 #include <string>
@@ -23,6 +24,14 @@
 #include "economics_policy.h"
 
 using namespace rpov2;
+
+static std::string DefaultPathUnderHome(const char* suffix)
+{
+    const char* home = getenv("HOME");
+    if (!home || !home[0])
+        return std::string(".") + suffix;
+    return std::string(home) + "/.rpov" + suffix;
+}
 
 static void Usage(const char* bin)
 {
@@ -477,7 +486,7 @@ static int SendCmd(int argc, char** argv)
     std::string to;
     std::string amount_s;
     std::string fee_s;
-    std::string data_dir = "./data_seed";
+    std::string data_dir = DefaultPathUnderHome("/wallet");
     std::string node_data_dir;
     std::string node_ep = "127.0.0.1:29101";
     std::string magic_s = "52504f57";
@@ -652,7 +661,8 @@ static int WalletIdentityCmd(const char* subcmd, const char* dir, uint32_t magic
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), &id, &err))
+    const bool create_if_missing = (std::string(subcmd) == "init");
+    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), create_if_missing, &id, &err))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -677,7 +687,7 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), &id, &err))
+    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), false, &id, &err))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -723,7 +733,7 @@ static int GetBalanceCmd(const char* dir, uint32_t magic, const char* registry_f
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), &id, &err))
+    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), false, &id, &err))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -750,7 +760,7 @@ static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), &id, &err))
+    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), false, &id, &err))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -790,7 +800,7 @@ static int WalletSendCmd(const char* to_address,
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), &id, &err))
+    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), true, &id, &err))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -960,8 +970,8 @@ static int MempoolDemo()
 
 int main(int argc, char** argv)
 {
-    const char* kDefaultWalletDir = "./data_wallet";
-    const char* kDefaultNodeDataDir = "./data_seed";
+    const std::string default_wallet_dir = DefaultPathUnderHome("/wallet");
+    const std::string default_seed_node_dir = DefaultPathUnderHome("/nodes/seed");
     if (argc < 2)
     {
         Usage(argv[0]);
@@ -980,8 +990,7 @@ int main(int argc, char** argv)
         const std::string subcmd = argv[2];
         if (subcmd == "init" || subcmd == "show")
         {
-            const char* default_dir = (subcmd == "show") ? kDefaultNodeDataDir : kDefaultWalletDir;
-            const char* dir = (argc >= 4) ? argv[3] : default_dir;
+            const char* dir = (argc >= 4) ? argv[3] : default_wallet_dir.c_str();
             const char* magic_arg = (argc >= 5) ? argv[4] : NULL;
             int rc = WalletIdentityCmd(subcmd.c_str(), dir, ParseMagic(magic_arg));
             if (rc == 1)
@@ -991,7 +1000,7 @@ int main(int argc, char** argv)
 
         if (subcmd == "info")
         {
-            const char* dir = (argc >= 4) ? argv[3] : kDefaultNodeDataDir;
+            const char* dir = (argc >= 4) ? argv[3] : default_wallet_dir.c_str();
             const char* magic_arg = (argc >= 5) ? argv[4] : NULL;
             const char* registry_file = (argc >= 6) ? argv[5] : NULL;
             return WalletInfoCmd(dir, ParseMagic(magic_arg), registry_file);
@@ -1007,7 +1016,7 @@ int main(int argc, char** argv)
             const char* to_address = argv[3];
             uint64_t amount = (uint64_t)strtoull(argv[4], NULL, 10);
             uint64_t fee = (uint64_t)strtoull(argv[5], NULL, 10);
-            const char* dir = (argc >= 7) ? argv[6] : kDefaultWalletDir;
+            const char* dir = (argc >= 7) ? argv[6] : default_wallet_dir.c_str();
             const char* magic_arg = (argc >= 8) ? argv[7] : NULL;
             const char* registry_file = (argc >= 9) ? argv[8] : NULL;
             return WalletSendCmd(to_address, amount, fee, dir, dir, ParseMagic(magic_arg), registry_file);
@@ -1065,7 +1074,7 @@ int main(int argc, char** argv)
                 printf("  %s tx status <tx_hex_file> [node_data_dir]\n", argv[0]);
                 return 1;
             }
-            const char* node_data_dir = (argc >= 5) ? argv[4] : "./data_seed";
+            const char* node_data_dir = (argc >= 5) ? argv[4] : default_seed_node_dir.c_str();
             return TxStatusCmd(argv[3], node_data_dir);
         }
         printf("tx usage:\n");
@@ -1075,14 +1084,14 @@ int main(int argc, char** argv)
     }
     if (cmd == "getbalance")
     {
-        const char* dir = (argc >= 3) ? argv[2] : kDefaultNodeDataDir;
+        const char* dir = (argc >= 3) ? argv[2] : default_wallet_dir.c_str();
         const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
         const char* registry_file = (argc >= 5) ? argv[4] : NULL;
         return GetBalanceCmd(dir, ParseMagic(magic_arg), registry_file);
     }
     if (cmd == "getutxo")
     {
-        const char* dir = (argc >= 3) ? argv[2] : kDefaultNodeDataDir;
+        const char* dir = (argc >= 3) ? argv[2] : default_wallet_dir.c_str();
         const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
         const char* registry_file = (argc >= 5) ? argv[4] : NULL;
         return GetUtxoCmd(dir, ParseMagic(magic_arg), registry_file);

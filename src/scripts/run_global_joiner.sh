@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RPOV_HOME="${RPOV_HOME:-${HOME}/.rpov}"
+RPOV_NODE_CONFIG="${RPOV_NODE_CONFIG:-${RPOV_HOME}/config/global_testnet.conf}"
+RPOV_ENV_FILE="${RPOV_ENV_FILE:-${RPOV_HOME}/env_liboqs.sh}"
 
 SEED_IP="${SEED_IP:-192.168.0.104}"
 SEED_PORT="${SEED_PORT:-29101}"
@@ -9,7 +12,7 @@ SEED_PEER="${SEED_PEER:-${SEED_IP}:${SEED_PORT}}"
 
 BIND_PORT="${BIND_PORT:-29102}"
 PUBLIC_ENDPOINT="${PUBLIC_ENDPOINT:-}"
-DATA_DIR="${DATA_DIR:-${ROOT_DIR}/data_joiner_${BIND_PORT}}"
+DATA_DIR="${DATA_DIR:-${RPOV_HOME}/nodes/joiner_${BIND_PORT}}"
 NETWORK_MAGIC_HEX="${NETWORK_MAGIC_HEX:-0x52504f57}"
 AUTOPROPOSE="${AUTOPROPOSE:-0}"
 AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-10}"
@@ -27,11 +30,11 @@ AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC}" \
 DURATION_SEC="${DURATION_SEC}" \
 ./scripts/install_testnet_node.sh
 
-source "${ROOT_DIR}/env_liboqs.sh"
+source "${RPOV_ENV_FILE}"
 
 echo "starting joiner node..."
 echo "bind_port=${BIND_PORT}"
 echo "seed_peer=${SEED_PEER}"
 echo "data_dir=${DATA_DIR}"
 
-exec "${ROOT_DIR}/build/rpov2_node" "${ROOT_DIR}/global_testnet.conf"
+exec "${ROOT_DIR}/build/rpov2_node" "${RPOV_NODE_CONFIG}"

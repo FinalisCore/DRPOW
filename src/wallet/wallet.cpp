@@ -64,12 +64,13 @@ static bool FillRandom(uint8_t* out, size_t n)
 bool LoadOrCreateWalletIdentity(const std::string& data_dir,
                                 uint32_t network_magic,
                                 CryptoBackend* crypto,
+                                bool create_if_missing,
                                 WalletIdentity* out,
                                 std::string* err)
 {
     if (!crypto || !out)
         return false;
-    if (!EnsureDir(data_dir))
+    if (create_if_missing && !EnsureDir(data_dir))
     {
         if (err)
             *err = "wallet_dir_create_failed";
@@ -90,6 +91,12 @@ bool LoadOrCreateWalletIdentity(const std::string& data_dir,
 
     if (!have)
     {
+        if (!create_if_missing)
+        {
+            if (err)
+                *err = "wallet_key_missing";
+            return false;
+        }
         if (!FillRandom(priv, sizeof(priv)))
         {
             if (err)

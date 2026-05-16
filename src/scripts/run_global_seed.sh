@@ -2,13 +2,16 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+RPOV_HOME="${RPOV_HOME:-${HOME}/.rpov}"
+RPOV_NODE_CONFIG="${RPOV_NODE_CONFIG:-${RPOV_HOME}/config/global_testnet.conf}"
+RPOV_ENV_FILE="${RPOV_ENV_FILE:-${RPOV_HOME}/env_liboqs.sh}"
 
 BIND_PORT="${BIND_PORT:-29101}"
 PUBLIC_IP="${PUBLIC_IP:-212.58.103.170}"
 PUBLIC_ENDPOINT="${PUBLIC_ENDPOINT:-${PUBLIC_IP}:${BIND_PORT}}"
 SEED_PEER="${SEED_PEER:-}"
-DATA_DIR="${DATA_DIR:-${ROOT_DIR}/data_seed}"
-KEY_DIR="${KEY_DIR:-${ROOT_DIR}/keys}"
+DATA_DIR="${DATA_DIR:-${RPOV_HOME}/nodes/seed}"
+KEY_DIR="${KEY_DIR:-${RPOV_HOME}/keys}"
 SEED_KEY_FILE="${SEED_KEY_FILE:-${KEY_DIR}/seed_signer_privkey.hex}"
 NETWORK_MAGIC_HEX="${NETWORK_MAGIC_HEX:-0x52504f57}"
 AUTOPROPOSE="${AUTOPROPOSE:-1}"
@@ -38,7 +41,7 @@ DURATION_SEC="${DURATION_SEC}" \
 SIGNER_PRIVKEY_HEX="${SIGNER_PRIVKEY_HEX}" \
 ./scripts/install_testnet_node.sh
 
-source "${ROOT_DIR}/env_liboqs.sh"
+source "${RPOV_ENV_FILE}"
 
 echo "starting seed node..."
 echo "bind_port=${BIND_PORT}"
@@ -50,4 +53,4 @@ else
 fi
 echo "data_dir=${DATA_DIR}"
 
-exec "${ROOT_DIR}/build/rpov2_node" "${ROOT_DIR}/global_testnet.conf"
+exec "${ROOT_DIR}/build/rpov2_node" "${RPOV_NODE_CONFIG}"

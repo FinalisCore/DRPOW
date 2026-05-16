@@ -18,6 +18,7 @@ struct WalletIdentity {
 bool LoadOrCreateWalletIdentity(const std::string& data_dir,
                                 uint32_t network_magic,
                                 CryptoBackend* crypto,
+                                bool create_if_missing,
                                 WalletIdentity* out,
                                 std::string* err);
 
