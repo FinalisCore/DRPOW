@@ -83,18 +83,25 @@ static void Clamp32(Bytes32* v, const Bytes32& lo, const Bytes32& hi)
 
 EconomicsPolicy DefaultEconomicsPolicy()
 {
+    static const uint64_t kAtomicPerCoin = 1000ULL;
+    static const uint64_t kRoundSeconds = 10ULL;
+    static const uint64_t kYearSeconds = 365ULL * 24ULL * 3600ULL;
     EconomicsPolicy p;
     p.max_spends_per_round = 10000;
     p.max_mints_per_round = 1;
     p.max_proof_cost_per_round = 8 * 1024 * 1024;
     p.min_fee_per_spend = 1;
-    p.max_fee_per_spend = 100;
+    p.max_fee_per_spend = 0;
     memset(p.min_target.v, 0x00, 32);
     p.min_target.v[31] = 0x01;
     for (int i = 0; i < 32; ++i)
         p.max_target.v[i] = 0xff;
-    p.initial_subsidy = 50;
-    p.halving_interval_rounds = 210000;
+    p.initial_subsidy = 50 * kAtomicPerCoin;
+    p.subsidy_floor = 1;  // tail emission floor in atomic units
+    // Era-0 duration is 2 years. Each next era doubles in duration (2y,4y,8y,...).
+    p.halving_interval_rounds = (2ULL * kYearSeconds) / kRoundSeconds;
+    p.initial_transfer_tax_ppm = 200000;  // 20%
+    p.min_transfer_tax_ppm = 20000;       // 2%
     p.target_window_rounds = 10;
     p.target_mints_per_window = 10;
     p.target_adjust_up_ppm_limit = 2000000;
@@ -107,10 +114,46 @@ uint64_t MintSubsidyForRound(uint64_t round, const EconomicsPolicy& policy)
 {
     if (round == 0 || policy.initial_subsidy == 0 || policy.halving_interval_rounds == 0)
         return 0;
-    uint64_t era = (round - 1) / policy.halving_interval_rounds;
+    uint64_t era = 0;
+    uint64_t remain = round - 1;
+    uint64_t era_len = policy.halving_interval_rounds;
+    while (remain >= era_len && era < 63)
+    {
+        remain -= era_len;
+        if (era_len > (UINT64_MAX >> 1))
+            era_len = UINT64_MAX;
+        else
+            era_len <<= 1;
+        ++era;
+    }
     if (era >= 63)
+        return policy.subsidy_floor;
+    uint64_t s = policy.initial_subsidy >> era;
+    if (s < policy.subsidy_floor)
+        s = policy.subsidy_floor;
+    return s;
+}
+
+uint64_t TransferTaxPpmForRound(uint64_t round, const EconomicsPolicy& policy)
+{
+    if (round == 0 || policy.initial_transfer_tax_ppm == 0)
         return 0;
-    return policy.initial_subsidy >> era;
+    uint64_t era = 0;
+    uint64_t remain = round - 1;
+    uint64_t era_len = policy.halving_interval_rounds == 0 ? 1 : policy.halving_interval_rounds;
+    while (remain >= era_len && era < 63)
+    {
+        remain -= era_len;
+        if (era_len > (UINT64_MAX >> 1))
+            era_len = UINT64_MAX;
+        else
+            era_len <<= 1;
+        ++era;
+    }
+    uint64_t ppm = (era >= 63) ? 0 : (policy.initial_transfer_tax_ppm >> era);
+    if (ppm < policy.min_transfer_tax_ppm)
+        ppm = policy.min_transfer_tax_ppm;
+    return ppm;
 }
 
 bool ValidateBatchEconomics(const RoundBatch& batch, const EconomicsPolicy& policy)
@@ -143,7 +186,43 @@ bool ValidateBatchFeePolicy(const RoundBatch& batch, const EconomicsPolicy& poli
 {
     for (size_t i = 0; i < batch.spends.size(); ++i)
     {
-        const uint64_t fee = batch.spends[i].fee;
+        const SpendTx& tx = batch.spends[i];
+        if (tx.inputs.empty())
+            return false;
+        if (tx.outputs.empty())
+            return false;
+        if (tx.transfer_amount == 0)
+            return false;
+
+        if (tx.inputs[0].ownership_proof.size() < 32)
+            return false;
+        Bytes32 sender_pubkey;
+        memcpy(sender_pubkey.v, &tx.inputs[0].ownership_proof[0], 32);
+        for (size_t j = 1; j < tx.inputs.size(); ++j)
+        {
+            if (tx.inputs[j].ownership_proof.size() < 32)
+                return false;
+            if (memcmp(sender_pubkey.v, &tx.inputs[j].ownership_proof[0], 32) != 0)
+                return false;
+        }
+
+        uint64_t external_out_sum = 0;
+        for (size_t j = 0; j < tx.outputs.size(); ++j)
+        {
+            if (memcmp(tx.outputs[j].owner_pubkey.v, sender_pubkey.v, 32) == 0)
+                continue;  // sender-owned change
+            if (UINT64_MAX - external_out_sum < tx.outputs[j].value)
+                return false;
+            external_out_sum += tx.outputs[j].value;
+        }
+        if (external_out_sum != tx.transfer_amount)
+            return false;
+
+        const uint64_t tax_ppm = TransferTaxPpmForRound(batch.round, policy);
+        const uint64_t expected_tax = (tx.transfer_amount * tax_ppm + 999999ULL) / 1000000ULL;
+        const uint64_t fee = tx.fee;
+        if (fee != expected_tax)
+            return false;
         if (fee < policy.min_fee_per_spend)
             return false;
         if (policy.max_fee_per_spend > 0 && fee > policy.max_fee_per_spend)

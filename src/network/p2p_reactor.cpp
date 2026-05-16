@@ -24,6 +24,7 @@ static bool SendAll(int fd, const uint8_t* data, size_t n)
     if (!data && n != 0)
         return false;
     size_t off = 0;
+    int eagain_spins = 0;
     while (off < n)
     {
         int flags = 0;
@@ -37,6 +38,8 @@ static bool SendAll(int fd, const uint8_t* data, size_t n)
                 continue;
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
+                if (++eagain_spins > 16)
+                    return false;
                 usleep(1000);
                 continue;
             }
@@ -195,6 +198,22 @@ bool P2PReactor::SendTo(int fd, const WireEnvelope& env)
     return false;
 }
 
+void P2PReactor::Disconnect(int fd)
+{
+    for (size_t i = 0; i < peers_fd_.size(); ++i)
+    {
+        if (peers_fd_[i].fd == fd)
+        {
+            PeerConn& c = peers_fd_[i];
+            if (c.outbound && !c.endpoint.empty())
+                outbound_fd_by_endpoint_.erase(c.endpoint);
+            close(c.fd);
+            peers_fd_.erase(peers_fd_.begin() + i);
+            return;
+        }
+    }
+}
+
 void P2PReactor::ConnectPeersOnce()
 {
     const uint64_t now_ms = NowMs();
@@ -250,6 +269,7 @@ void P2PReactor::ConnectPeersOnce()
         c.saw_hello = false;
         c.outbound = true;
         c.endpoint = peers_[i];
+        c.hello_deadline_ms = NowMs() + 5000;
         peers_fd_.push_back(c);
         outbound_fd_by_endpoint_[peers_[i]] = fd;
 
@@ -267,6 +287,26 @@ void P2PReactor::ConnectPeersOnce()
 
 void P2PReactor::AcceptIncoming()
 {
+    const size_t kMaxInboundPerIp = 4;
+    const size_t kMaxInboundPer24 = 16;
+    std::map<uint32_t, size_t> per_ip;
+    std::map<uint32_t, size_t> per_24;
+    for (size_t i = 0; i < peers_fd_.size(); ++i)
+    {
+        if (peers_fd_[i].outbound || peers_fd_[i].endpoint.empty())
+            continue;
+        std::string host;
+        uint16_t port = 0;
+        if (!ParseHostPort(peers_fd_[i].endpoint, &host, &port))
+            continue;
+        in_addr a;
+        if (inet_pton(AF_INET, host.c_str(), &a) != 1)
+            continue;
+        const uint32_t ip = ntohl(a.s_addr);
+        per_ip[ip] += 1;
+        per_24[ip >> 8] += 1;
+    }
+
     while (true)
     {
         sockaddr_in in_addr;
@@ -281,10 +321,17 @@ void P2PReactor::AcceptIncoming()
         int flags = fcntl(fd, F_GETFL, 0);
         if (flags >= 0)
             fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        const uint32_t ip_host = ntohl(in_addr.sin_addr.s_addr);
+        if (per_ip[ip_host] >= kMaxInboundPerIp || per_24[ip_host >> 8] >= kMaxInboundPer24)
+        {
+            close(fd);
+            continue;
+        }
         PeerConn c;
         c.fd = fd;
         c.saw_hello = false;
         c.outbound = false;
+        c.hello_deadline_ms = NowMs() + 5000;
         char ip[64];
         const char* p = inet_ntop(AF_INET, &in_addr.sin_addr, ip, sizeof(ip));
         if (p)
@@ -294,6 +341,8 @@ void P2PReactor::AcceptIncoming()
             c.endpoint = ep;
         }
         peers_fd_.push_back(c);
+        per_ip[ip_host] += 1;
+        per_24[ip_host >> 8] += 1;
         WireEnvelope hello;
         hello.magic = WireMagicMainnet();
         hello.version = 1;
@@ -349,6 +398,14 @@ void P2PReactor::OnPeerReadable(size_t idx)
             return;
         }
         c.rx_buf.insert(c.rx_buf.end(), buf, buf + r);
+        if (c.rx_buf.size() > (WireMaxPayloadBytes() * 2))
+        {
+            if (c.outbound && !c.endpoint.empty())
+                outbound_fd_by_endpoint_.erase(c.endpoint);
+            close(c.fd);
+            peers_fd_.erase(peers_fd_.begin() + idx);
+            return;
+        }
     }
 
     while (true)
@@ -361,12 +418,27 @@ void P2PReactor::OnPeerReadable(size_t idx)
             continue;
         if (env.magic != WireMagicMainnet() || env.version != 1)
             continue;
-        // Fail-open on handshake ordering: accept first valid framed message
-        // even if HELLO wasn't seen yet, then mark connection live.
-        if (!c.saw_hello && env.msg_type != WIRE_MSG_HELLO)
+        if (!c.saw_hello)
+        {
+            const uint64_t now_ms = NowMs();
+            if (now_ms > c.hello_deadline_ms)
+            {
+                if (c.outbound && !c.endpoint.empty())
+                    outbound_fd_by_endpoint_.erase(c.endpoint);
+                close(c.fd);
+                peers_fd_.erase(peers_fd_.begin() + idx);
+                return;
+            }
+            if (env.msg_type != WIRE_MSG_HELLO || env.payload.size() != 32)
+            {
+                if (c.outbound && !c.endpoint.empty())
+                    outbound_fd_by_endpoint_.erase(c.endpoint);
+                close(c.fd);
+                peers_fd_.erase(peers_fd_.begin() + idx);
+                return;
+            }
             c.saw_hello = true;
-        if (env.msg_type == WIRE_MSG_HELLO)
-            c.saw_hello = true;
+        }
         if (on_message_)
             on_message_(c.fd, env);
     }

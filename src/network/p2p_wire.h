@@ -14,6 +14,8 @@ namespace rpov2 {
 
 enum WireMsgType {
     WIRE_MSG_HELLO = 0,
+    WIRE_MSG_HELLO_CHALLENGE = 10,
+    WIRE_MSG_HELLO_AUTH = 11,
     WIRE_MSG_TX = 1,
     WIRE_MSG_PROPOSE = 2,
     WIRE_MSG_VOTE = 3,
@@ -64,6 +66,10 @@ bool ParsePeerListPayload(const std::vector<uint8_t>& in,
                           std::vector<uint8_t>* signature);
 bool SerializeSpendTxSubmitPayload(const SpendTx& tx, std::vector<uint8_t>* out);
 bool ParseSpendTxSubmitPayload(const std::vector<uint8_t>& in, SpendTx* out);
+bool SerializeHelloChallengePayload(const Bytes32& challenge, std::vector<uint8_t>* out);
+bool ParseHelloChallengePayload(const std::vector<uint8_t>& in, Bytes32* challenge);
+bool SerializeHelloAuthPayload(const Bytes32& node_id, const Bytes32& challenge, const std::vector<uint8_t>& signature, std::vector<uint8_t>* out);
+bool ParseHelloAuthPayload(const std::vector<uint8_t>& in, Bytes32* node_id, Bytes32* challenge, std::vector<uint8_t>* signature);
 
 }  
 

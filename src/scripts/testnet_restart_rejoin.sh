@@ -5,8 +5,16 @@ ROOT=/tmp/rpov2_testnet_restart
 RUN_TIMEOUT_SEC="${RUN_TIMEOUT_SEC:-90}"
 CRASH_AFTER_SEC="${CRASH_AFTER_SEC:-10}"
 REJOIN_DELAY_SEC="${REJOIN_DELAY_SEC:-4}"
-PKG_CONFIG_PATH="${PKG_CONFIG_PATH:-/home/greendragon/Desktop/coin/src/liboqs/install/lib/pkgconfig}"
-LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/home/greendragon/Desktop/coin/src/liboqs/install/lib}"
+LIBOQS_PKGCFG="/home/greendragon/Desktop/coin/src/liboqs/install/lib/pkgconfig"
+LIBOQS_LIBDIR="/home/greendragon/Desktop/coin/src/liboqs/install/lib"
+case ":${PKG_CONFIG_PATH:-}:" in
+  *":$LIBOQS_PKGCFG:"*) ;;
+  *) PKG_CONFIG_PATH="$LIBOQS_PKGCFG${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" ;;
+esac
+case ":${LD_LIBRARY_PATH:-}:" in
+  *":$LIBOQS_LIBDIR:"*) ;;
+  *) LD_LIBRARY_PATH="$LIBOQS_LIBDIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+esac
 export PKG_CONFIG_PATH
 export LD_LIBRARY_PATH
 
@@ -15,8 +23,11 @@ pkill -f "rpov2_node /tmp/rpov2_testnet_restart/node" >/dev/null 2>&1 || true
 rm -rf "$ROOT"
 mkdir -p "$ROOT/node1" "$ROOT/node2" "$ROOT/node3"
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
 make USE_LIBOQS=1 rpov2_node
+NODE_BIN="$REPO_ROOT/build/rpov2_node"
 
 pick_port() {
   local p=$1
@@ -48,7 +59,7 @@ bind_port=$tmp_port
 duration_sec=1
 signer_privkey_hex=$key
 CONF
-  ./rpov2_node "$tmp_conf" > "$tmp_log" 2>&1 || true
+  "$NODE_BIN" "$tmp_conf" > "$tmp_log" 2>&1 || true
   rg -o "signer_id=[0-9a-f]{64}" "$tmp_log" | sed 's/^signer_id=//' | tail -n 1
 }
 
@@ -99,11 +110,11 @@ echo "ports: $P1_PORT $P2_PORT $P3_PORT"
 echo "validators: $VALS"
 echo "crash_after_sec: $CRASH_AFTER_SEC rejoin_delay_sec: $REJOIN_DELAY_SEC"
 
-stdbuf -oL -eL ./rpov2_node "$ROOT/node1.conf" > "$ROOT/node1.log" 2>&1 &
+stdbuf -oL -eL "$NODE_BIN" "$ROOT/node1.conf" > "$ROOT/node1.log" 2>&1 &
 PID1=$!
-stdbuf -oL -eL ./rpov2_node "$ROOT/node2.conf" > "$ROOT/node2.log" 2>&1 &
+stdbuf -oL -eL "$NODE_BIN" "$ROOT/node2.conf" > "$ROOT/node2.log" 2>&1 &
 PID2=$!
-stdbuf -oL -eL ./rpov2_node "$ROOT/node3.conf" > "$ROOT/node3.log" 2>&1 &
+stdbuf -oL -eL "$NODE_BIN" "$ROOT/node3.conf" > "$ROOT/node3.log" 2>&1 &
 PID3=$!
 
 echo "$PID2" > "$ROOT/node2.pid"
@@ -124,7 +135,7 @@ echo "$PID2" > "$ROOT/node2.pid"
         "$ROOT/node2/sync_tip.dat" \
         "$ROOT/node2/commit_payload_cache.bin"
   sleep "$REJOIN_DELAY_SEC"
-  stdbuf -oL -eL ./rpov2_node "$ROOT/node2.conf" >> "$ROOT/node2.log" 2>&1 &
+  stdbuf -oL -eL "$NODE_BIN" "$ROOT/node2.conf" >> "$ROOT/node2.log" 2>&1 &
   NEW_PID2=$!
   echo "rejoin_event: restarted node2 pid=$NEW_PID2" >> "$ROOT/harness.log"
   echo "$NEW_PID2" > "$ROOT/node2.pid"

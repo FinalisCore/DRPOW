@@ -81,6 +81,7 @@ void SerializeSpendTxCanonical(const SpendTx& tx, std::vector<uint8_t>* out)
     }
 
     WriteVec(out, tx.sum_proof);
+    WriteU64LE(out, tx.transfer_amount);
     WriteU64LE(out, tx.timestamp);
     WriteU64LE(out, tx.fee);
 
@@ -139,6 +140,8 @@ bool ParseSpendTxCanonical(const uint8_t* data, size_t data_len, size_t* off, Sp
     }
 
     if (!ReadVecLocal(data, data_len, off, &tx.sum_proof))
+        return false;
+    if (!ReadU64LELocal(data, data_len, off, &tx.transfer_amount))
         return false;
     if (!ReadU64LELocal(data, data_len, off, &tx.timestamp))
         return false;

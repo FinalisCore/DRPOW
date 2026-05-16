@@ -30,6 +30,7 @@ struct SpendTx {
     std::vector<SpendInput> inputs;
     std::vector<UtxoOutput> outputs;
     std::vector<uint8_t> sum_proof;
+    uint64_t transfer_amount;
     uint64_t timestamp;
     uint64_t fee;
     std::vector< std::vector<uint8_t> > signatures;

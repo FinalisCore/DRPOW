@@ -302,14 +302,63 @@ static std::vector<Validator> DeriveEpochValidatorsDeterministic(const std::vect
 
 struct MinerCountEntry {
     Bytes32 miner;
-    uint64_t count;
+    Bytes32 work_score;
+    uint64_t wins;
+    uint64_t wins_recent;
+    bool incumbent;
 };
+
+static int CompareBytes32(const Bytes32& a, const Bytes32& b)
+{
+    return memcmp(a.v, b.v, 32);
+}
 
 static bool MinerCountEntryLess(const MinerCountEntry& a, const MinerCountEntry& b)
 {
-    if (a.count != b.count)
-        return a.count > b.count;
+    const int c = CompareBytes32(a.work_score, b.work_score);
+    if (c != 0)
+        return c > 0;
+    if (a.wins != b.wins)
+        return a.wins > b.wins;
     return memcmp(a.miner.v, b.miner.v, 32) < 0;
+}
+
+static bool SameValidatorSetOrdered(const std::vector<Validator>& a, const std::vector<Validator>& b)
+{
+    if (a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); ++i)
+    {
+        if (memcmp(a[i].validator_id.v, b[i].validator_id.v, 32) != 0)
+            return false;
+        if (a[i].voting_power != b[i].voting_power)
+            return false;
+    }
+    return true;
+}
+
+static void AddBytes32Saturating(Bytes32* acc, const Bytes32& delta)
+{
+    uint16_t carry = 0;
+    for (int i = 31; i >= 0; --i)
+    {
+        const uint16_t s = (uint16_t)acc->v[i] + (uint16_t)delta.v[i] + carry;
+        acc->v[i] = (uint8_t)(s & 0xff);
+        carry = (uint16_t)(s >> 8);
+    }
+    if (carry != 0)
+        memset(acc->v, 0xff, 32);
+}
+
+static Bytes32 WorkScoreFromTarget256(const Bytes32& target)
+{
+    // Full-256 deterministic monotone proxy:
+    // contribution = (2^256 - 1) - target
+    // Smaller target => larger contribution.
+    Bytes32 out;
+    for (int i = 0; i < 32; ++i)
+        out.v[i] = (uint8_t)~target.v[i];
+    return out;
 }
 
 static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const RegistryStateStore& store,
@@ -322,52 +371,128 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
     if (epoch == 0 || epoch_length == 0 || max_validators == 0)
         return out;
 
-    const uint64_t prev_start = (epoch - 1) * epoch_length + 1;
-    std::vector<RoundCommitRecord> recs;
-    if (!store.ExportVerifiedCommitRecordsFromRound(prev_start, (size_t)epoch_length, &recs))
+    const uint64_t kAdmissionLookbackEpochs = 4;
+    const uint64_t latest_epoch = epoch - 1;
+    struct MinerStats {
+        uint64_t wins;
+        uint64_t wins_recent;
+        Bytes32 work_score;
+    };
+    std::map<std::string, MinerStats> stats;
+    for (uint64_t off = 0; off < kAdmissionLookbackEpochs; ++off)
     {
-        if (prev_epoch)
-            return prev_epoch->validators;
-        return out;
-    }
-
-    std::map<std::string, uint64_t> counts;
-    for (size_t i = 0; i < recs.size(); ++i)
-    {
-        MintTx mint;
-        size_t off = 0;
-        if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
-                                  recs[i].consensus_proof.size(),
-                                  &off,
-                                  &mint) ||
-            off != recs[i].consensus_proof.size())
+        if (latest_epoch < off)
+            break;
+        const uint64_t src_epoch = latest_epoch - off;
+        const uint64_t from_round = src_epoch * epoch_length + 1;
+        std::vector<RoundCommitRecord> recs;
+        if (!store.ExportVerifiedCommitRecordsFromRound(from_round, (size_t)epoch_length, &recs))
         {
             continue;
         }
-        std::string k((const char*)mint.miner_pubkey.v, 32);
-        counts[k] += 1;
+
+        // More recent eras get more weight (4,3,2,1 for lookback=4).
+        const uint64_t era_weight = (kAdmissionLookbackEpochs - off);
+        for (size_t i = 0; i < recs.size(); ++i)
+        {
+            MintTx mint;
+            size_t p = 0;
+            if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                      recs[i].consensus_proof.size(),
+                                      &p,
+                                      &mint) ||
+                p != recs[i].consensus_proof.size())
+            {
+                continue;
+            }
+            std::string k((const char*)mint.miner_pubkey.v, 32);
+            MinerStats s = stats[k];
+            if (s.wins < UINT64_MAX)
+                s.wins += 1;
+            if (off == 0 && s.wins_recent < UINT64_MAX)
+                s.wins_recent += 1;
+            const Bytes32 w = WorkScoreFromTarget256(mint.target);
+            for (uint64_t n = 0; n < era_weight; ++n)
+                AddBytes32Saturating(&s.work_score, w);
+            stats[k] = s;
+        }
+    }
+
+    std::set<std::string> incumbent_ids;
+    if (prev_epoch)
+    {
+        for (size_t i = 0; i < prev_epoch->validators.size(); ++i)
+            incumbent_ids.insert(std::string((const char*)prev_epoch->validators[i].validator_id.v, 32));
     }
 
     std::vector<MinerCountEntry> ranked;
-    ranked.reserve(counts.size());
-    for (std::map<std::string, uint64_t>::const_iterator it = counts.begin(); it != counts.end(); ++it)
+    ranked.reserve(stats.size());
+    for (std::map<std::string, MinerStats>::const_iterator it = stats.begin(); it != stats.end(); ++it)
     {
         MinerCountEntry e;
         memset(e.miner.v, 0, 32);
         memcpy(e.miner.v, it->first.data(), 32);
-        e.count = it->second;
+        e.work_score = it->second.work_score;
+        e.wins = it->second.wins;
+        e.wins_recent = it->second.wins_recent;
+        e.incumbent = incumbent_ids.count(it->first) != 0;
         ranked.push_back(e);
     }
     std::sort(ranked.begin(), ranked.end(), MinerCountEntryLess);
 
-    for (size_t i = 0; i < ranked.size() && out.size() < max_validators; ++i)
+    size_t target_size = max_validators;
+    if (prev_epoch && !prev_epoch->validators.empty())
     {
+        target_size = prev_epoch->validators.size();
+        if (target_size > max_validators)
+            target_size = max_validators;
+    }
+    if (target_size == 0)
+        target_size = 1;
+
+    // Admission hardening:
+    // - deterministic churn cap (max 1/3 newcomers per epoch, minimum 1)
+    // - incumbents with PoW activity keep priority
+    // - newcomers must prove stronger work concentration (>=2 wins when epoch has >=10 rounds)
+    const size_t prev_size = prev_epoch ? prev_epoch->validators.size() : 0;
+    size_t max_newcomers = 1;
+    if (prev_size > 0)
+    {
+        max_newcomers = prev_size / 3;
+        if (max_newcomers == 0)
+            max_newcomers = 1;
+    }
+    if (max_newcomers > target_size)
+        max_newcomers = target_size;
+    const uint64_t newcomer_min_wins_recent = epoch_length >= 10 ? 2 : 1;
+    const uint64_t incumbent_min_wins_total = epoch_length >= 10 ? 2 : 1;
+
+    size_t newcomers_added = 0;
+    for (size_t i = 0; i < ranked.size() && out.size() < target_size; ++i)
+    {
+        if (!ranked[i].incumbent)
+        {
+            if (newcomers_added >= max_newcomers)
+                continue;
+            if (ranked[i].wins_recent < newcomer_min_wins_recent)
+                continue;
+        }
+        else if (ranked[i].wins < incumbent_min_wins_total)
+        {
+            // Incumbents must also show sustained participation over lookback window.
+            continue;
+        }
         Validator v;
         v.validator_id = ranked[i].miner;
         v.voting_power = 1;
         out.push_back(v);
+        if (!ranked[i].incumbent)
+            newcomers_added += 1;
     }
 
+    // Strict era-local PoW admission:
+    // do NOT auto-carry validators that produced no PoW in the source era window.
+    // This keeps validator rights coupled to recent work.
     if (out.empty() && prev_epoch && !prev_epoch->validators.empty())
         return prev_epoch->validators;
     return out;
@@ -516,6 +641,132 @@ static bool LoadAndVerifySyncedCommitLog(const std::string& sync_log_file,
     return true;
 }
 
+static bool LoadVerifiedCommitLogRecordsGeneric(const std::string& log_file,
+                                                const CryptoBackend* crypto,
+                                                std::vector<RoundCommitRecord>* out_records)
+{
+    if (!crypto || !out_records)
+        return false;
+    out_records->clear();
+    std::ifstream in(log_file.c_str(), std::ios::binary);
+    if (!in.good())
+        return true;
+    uint64_t last_round = 0;
+    while (true)
+    {
+        RoundCommitRecord rec;
+        uint64_t proof_size = 0;
+        uint64_t sig_size = 0;
+        in.read((char*)&rec.record_version, sizeof(rec.record_version));
+        if (in.eof())
+            break;
+        if (!in.good())
+            return false;
+        in.read((char*)&rec.hash_alg_id, sizeof(rec.hash_alg_id));
+        in.read((char*)&rec.sig_alg_id, sizeof(rec.sig_alg_id));
+        in.read((char*)&rec.round, sizeof(rec.round));
+        in.read((char*)rec.batch_hash.v, 32);
+        in.read((char*)rec.state_root.v, 32);
+        in.read((char*)&proof_size, sizeof(proof_size));
+        if (!in.good() || proof_size > (16 * 1024 * 1024))
+            return false;
+        rec.consensus_proof.assign((size_t)proof_size, 0);
+        if (proof_size > 0)
+            in.read((char*)&rec.consensus_proof[0], (std::streamsize)proof_size);
+        in.read((char*)rec.record_hash.v, 32);
+        in.read((char*)rec.record_signer_id.v, 32);
+        in.read((char*)&sig_size, sizeof(sig_size));
+        if (!in.good() || sig_size > (16 * 1024 * 1024))
+            return false;
+        rec.record_signature.assign((size_t)sig_size, 0);
+        if (sig_size > 0)
+            in.read((char*)&rec.record_signature[0], (std::streamsize)sig_size);
+        if (!in.good())
+            return false;
+        if (rec.round == 0 || rec.round <= last_round)
+            return false;
+        Bytes32 h;
+        if (!ComputeRecordHashV1Local(rec, &h) || memcmp(h.v, rec.record_hash.v, 32) != 0)
+            return false;
+        if (!crypto->VerifyEd25519(rec.record_signer_id.v,
+                                   rec.record_hash.v,
+                                   32,
+                                   rec.record_signature.empty() ? NULL : &rec.record_signature[0],
+                                   rec.record_signature.size()))
+            return false;
+        last_round = rec.round;
+        out_records->push_back(rec);
+    }
+    return true;
+}
+
+static bool WriteCommitRecordBinary(std::ofstream* out, const RoundCommitRecord& rec)
+{
+    if (!out || !out->good())
+        return false;
+    out->write((const char*)&rec.record_version, sizeof(rec.record_version));
+    out->write((const char*)&rec.hash_alg_id, sizeof(rec.hash_alg_id));
+    out->write((const char*)&rec.sig_alg_id, sizeof(rec.sig_alg_id));
+    out->write((const char*)&rec.round, sizeof(rec.round));
+    out->write((const char*)rec.batch_hash.v, 32);
+    out->write((const char*)rec.state_root.v, 32);
+    const uint64_t proof_size = (uint64_t)rec.consensus_proof.size();
+    out->write((const char*)&proof_size, sizeof(proof_size));
+    if (proof_size > 0)
+        out->write((const char*)&rec.consensus_proof[0], (std::streamsize)proof_size);
+    out->write((const char*)rec.record_hash.v, 32);
+    out->write((const char*)rec.record_signer_id.v, 32);
+    const uint64_t sig_size = (uint64_t)rec.record_signature.size();
+    out->write((const char*)&sig_size, sizeof(sig_size));
+    if (sig_size > 0)
+        out->write((const char*)&rec.record_signature[0], (std::streamsize)sig_size);
+    return out->good();
+}
+
+static bool RewriteCommitLogGeneric(const std::string& path, const std::vector<RoundCommitRecord>& records)
+{
+    std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out.good())
+        return false;
+    for (size_t i = 0; i < records.size(); ++i)
+        if (!WriteCommitRecordBinary(&out, records[i]))
+            return false;
+    return out.good();
+}
+
+static bool WriteCheckpointSnapshot(const std::string& checkpoint_file, const RoundCommitRecord& rec)
+{
+    std::ofstream out(checkpoint_file.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out.good())
+        return false;
+    return WriteCommitRecordBinary(&out, rec);
+}
+
+static bool RotateCommitLogWithCheckpoint(const std::string& log_file,
+                                          const std::string& checkpoint_file,
+                                          const CryptoBackend* crypto,
+                                          uint64_t keep_from_round)
+{
+    std::vector<RoundCommitRecord> all;
+    if (!LoadVerifiedCommitLogRecordsGeneric(log_file, crypto, &all))
+        return false;
+    if (all.empty())
+        return true;
+    size_t first_keep = 0;
+    while (first_keep < all.size() && all[first_keep].round < keep_from_round)
+        ++first_keep;
+    if (first_keep == 0)
+        return true;
+    const RoundCommitRecord boundary = all[first_keep - 1];
+    std::vector<RoundCommitRecord> kept;
+    kept.reserve(all.size() - first_keep);
+    for (size_t i = first_keep; i < all.size(); ++i)
+        kept.push_back(all[i]);
+    if (!RewriteCommitLogGeneric(log_file, kept))
+        return false;
+    return WriteCheckpointSnapshot(checkpoint_file, boundary);
+}
+
 static bool AppendCommitPayloadCache(const std::string& cache_file, const std::vector<uint8_t>& payload)
 {
     std::ofstream out(cache_file.c_str(), std::ios::binary | std::ios::app);
@@ -613,6 +864,16 @@ static bool RewriteCommitPayloadCache(const std::string& cache_file, const std::
             out.write((const char*)&payloads[i][0], (std::streamsize)n);
     }
     return out.good();
+}
+
+static uint64_t FileSizeBytes(const std::string& path)
+{
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0)
+        return 0;
+    if (st.st_size < 0)
+        return 0;
+    return (uint64_t)st.st_size;
 }
 
 int main(int argc, char** argv)
@@ -766,9 +1027,13 @@ int main(int argc, char** argv)
     std::map<std::string, std::set<std::string> > known_vote_ids;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     std::map<int, uint64_t> peer_last_round;
+    time_t last_progress_time = time(NULL);
+    uint64_t last_progress_round = last_committed_round;
     const std::string sync_cache = cfg.data_dir + "/sync_commit.log";
+    const std::string sync_cache_checkpoint = cfg.data_dir + "/sync_commit.checkpoint";
     const std::string sync_tip_file = cfg.data_dir + "/sync_tip.dat";
     const std::string commit_payload_cache = cfg.data_dir + "/commit_payload_cache.bin";
+    const std::string commitlog_checkpoint = cfg.data_dir + "/commit.checkpoint";
     uint64_t synced_last_round = 0;
     Bytes32 synced_state_root;
     memset(synced_state_root.v, 0, 32);
@@ -796,6 +1061,7 @@ int main(int argc, char** argv)
 
     std::function<void()> CompactCommitPayloadCache = [&]() {
         const size_t before_count = CountCommitPayloadCacheEntries(commit_payload_cache);
+        const uint64_t before_bytes = FileSizeBytes(commit_payload_cache);
         std::vector< std::vector<uint8_t> > payloads;
         if (!LoadCommitPayloadCache(commit_payload_cache, &payloads))
             return;
@@ -843,23 +1109,45 @@ int main(int argc, char** argv)
             seen.insert(k);
             compacted.push_back(entries[i].payload);
         }
-        (void)RewriteCommitPayloadCache(commit_payload_cache, compacted);
-        const size_t after_count = compacted.size();
-        printf("sync_cache_compact before=%zu after=%zu low=%llu high=%llu\n",
+
+        // Hard byte cap retention: keep newest payloads within cap after round-window filtering.
+        const uint64_t kCommitPayloadCacheMaxBytes = 64ULL * 1024ULL * 1024ULL;
+        uint64_t kept_bytes = 0;
+        std::vector< std::vector<uint8_t> > capped_rev;
+        capped_rev.reserve(compacted.size());
+        for (size_t i = compacted.size(); i > 0; --i)
+        {
+            const std::vector<uint8_t>& p = compacted[i - 1];
+            const uint64_t entry_bytes = (uint64_t)p.size() + 4ULL;
+            if (!capped_rev.empty() && kept_bytes + entry_bytes > kCommitPayloadCacheMaxBytes)
+                break;
+            kept_bytes += entry_bytes;
+            capped_rev.push_back(p);
+        }
+        std::vector< std::vector<uint8_t> > capped;
+        capped.reserve(capped_rev.size());
+        for (size_t i = capped_rev.size(); i > 0; --i)
+            capped.push_back(capped_rev[i - 1]);
+
+        (void)RewriteCommitPayloadCache(commit_payload_cache, capped);
+        const size_t after_count = capped.size();
+        const uint64_t after_bytes = FileSizeBytes(commit_payload_cache);
+        printf("sync_cache_compact before=%zu after=%zu before_bytes=%llu after_bytes=%llu low=%llu high=%llu\n",
                before_count,
                after_count,
+               (unsigned long long)before_bytes,
+               (unsigned long long)after_bytes,
                (unsigned long long)low,
                (unsigned long long)high);
     };
     CompactCommitPayloadCache();
 
-    std::function<void(uint64_t)> EnsureEpochTransitionForRound = [&](uint64_t round) {
+    std::function<bool(uint64_t, const char*)> EnsureEpochTransitionForRound = [&](uint64_t round, const char* phase) {
         if (round == 0)
-            return;
-        ValidatorEpoch existing;
-        if (vset.GetEpochForRound(round, &existing))
-            return;
+            return true;
         const uint64_t epoch = (round - 1) / kRuntimeEpochLength;
+        ValidatorEpoch existing;
+        const bool have_existing = vset.GetEpochForRound(round, &existing);
         ValidatorEpoch prev_epoch;
         bool have_prev_epoch = (epoch > 0) && vset.GetEpochForRound((epoch - 1) * kRuntimeEpochLength + 1, &prev_epoch);
         std::vector<Validator> next_vals;
@@ -869,6 +1157,13 @@ int main(int argc, char** argv)
         }
         else
         {
+            if (!have_prev_epoch)
+            {
+                printf("epoch_transition_reject phase=%s epoch=%llu reason=missing_prev_epoch\n",
+                       phase ? phase : "-",
+                       (unsigned long long)epoch);
+                return false;
+            }
             next_vals = DeriveEpochValidatorsFromPowHistory(store,
                                                             have_prev_epoch ? &prev_epoch : NULL,
                                                             epoch,
@@ -876,21 +1171,78 @@ int main(int argc, char** argv)
                                                             kEpochValidatorCap);
         }
         if (next_vals.empty())
-            return;
+        {
+            printf("epoch_transition_reject phase=%s epoch=%llu reason=empty_next_set\n",
+                   phase ? phase : "-",
+                   (unsigned long long)epoch);
+            return false;
+        }
+        if (have_existing)
+        {
+            if (!SameValidatorSetOrdered(existing.validators, next_vals))
+            {
+                printf("epoch_transition_reject phase=%s epoch=%llu reason=set_mismatch existing=%zu expected=%zu\n",
+                       phase ? phase : "-",
+                       (unsigned long long)epoch,
+                       existing.validators.size(),
+                       next_vals.size());
+                return false;
+            }
+            return true;
+        }
         if (!vset.InstallEpoch(epoch, next_vals))
-            return;
+        {
+            printf("epoch_transition_reject phase=%s epoch=%llu reason=install_failed\n",
+                   phase ? phase : "-",
+                   (unsigned long long)epoch);
+            return false;
+        }
         Bytes32 next_target;
         if (!ComputeExpectedTargetForRoundNode(store, round, economics_policy, &next_target))
             memset(next_target.v, 0, 32);
         Bytes32 seed_root;
         if (!store.ReadStateRoot(&seed_root))
             memset(seed_root.v, 0, 32);
-        printf("epoch_transition epoch=%llu round_start=%llu validators=%zu target=%s seed_root=%s\n",
+        size_t prev_count = 0;
+        size_t retained_count = 0;
+        size_t newcomer_count = next_vals.size();
+        if (have_prev_epoch)
+        {
+            prev_count = prev_epoch.validators.size();
+            std::set<std::string> prev_ids;
+            for (size_t i = 0; i < prev_epoch.validators.size(); ++i)
+                prev_ids.insert(std::string((const char*)prev_epoch.validators[i].validator_id.v, 32));
+            for (size_t i = 0; i < next_vals.size(); ++i)
+            {
+                if (prev_ids.count(std::string((const char*)next_vals[i].validator_id.v, 32)))
+                    retained_count += 1;
+            }
+            if (retained_count <= newcomer_count)
+                newcomer_count -= retained_count;
+            else
+                newcomer_count = 0;
+        }
+        printf("epoch_transition epoch=%llu round_start=%llu validators=%zu retained=%zu newcomers=%zu prev=%zu target=%s seed_root=%s\n",
                (unsigned long long)epoch,
                (unsigned long long)(epoch * kRuntimeEpochLength + 1),
                next_vals.size(),
+               retained_count,
+               newcomer_count,
+               prev_count,
                Hex32(next_target).c_str(),
                Hex32(seed_root).c_str());
+        return true;
+    };
+    std::function<bool(const Bytes32&, uint64_t)> IsValidatorForRound = [&](const Bytes32& validator_id, uint64_t round) {
+        ValidatorEpoch epoch;
+        if (!vset.GetEpochForRound(round, &epoch))
+            return false;
+        for (size_t i = 0; i < epoch.validators.size(); ++i)
+        {
+            if (memcmp(epoch.validators[i].validator_id.v, validator_id.v, 32) == 0)
+                return true;
+        }
+        return false;
     };
 
     std::function<void()> TryCatchUpFromCache = [&]() {
@@ -940,7 +1292,12 @@ int main(int argc, char** argv)
                        (unsigned long long)qc.round);
                 break;
             }
-            EnsureEpochTransitionForRound(batch.round);
+            if (!EnsureEpochTransitionForRound(batch.round, "catchup"))
+            {
+                printf("catchup_break_epoch_transition_invalid round=%llu\n",
+                       (unsigned long long)batch.round);
+                break;
+            }
             if (batch.round > economics_policy.genesis_bootstrap_rounds)
             {
                 ValidatorEpoch epoch;
@@ -965,6 +1322,8 @@ int main(int argc, char** argv)
                 break;
             }
             last_committed_round = batch.round;
+            last_progress_round = last_committed_round;
+            last_progress_time = time(NULL);
             applied++;
             printf("catchup commit ok round=%llu\n", (unsigned long long)batch.round);
         }
@@ -1069,9 +1428,327 @@ int main(int argc, char** argv)
         out.payload.swap(payload);
         (void)reactor.Broadcast(out);
     };
+    struct PeerRateState {
+        double tokens_sync;
+        double tokens_tx;
+        double tokens_consensus;
+        uint64_t last_ms;
+        int ban_score;
+        uint64_t quarantine_until_ms;
+    };
+    std::map<int, PeerRateState> peer_rate;
+    std::map<int, Bytes32> peer_node_id_by_fd;
+    std::map<std::string, int> peer_fd_by_node_id;
+    std::map<int, Bytes32> peer_pending_node_id_by_fd;
+    std::map<int, Bytes32> peer_challenge_by_fd;
+    struct PeerPenaltyPersist {
+        double score;
+        uint64_t last_ms;
+        uint64_t quarantine_until_ms;
+    };
+    std::map<std::string, PeerPenaltyPersist> persist_penalty_by_node;
+    std::map<std::string, PeerPenaltyPersist> persist_penalty_by_endpoint;
+    auto now_ms = [&]() -> uint64_t { return (uint64_t)time(NULL) * 1000ULL; };
+    auto decay_persist = [&](PeerPenaltyPersist* p) {
+        if (!p)
+            return;
+        const uint64_t n = now_ms();
+        if (p->last_ms == 0 || n <= p->last_ms)
+        {
+            p->last_ms = n;
+            return;
+        }
+        const double dt = (double)(n - p->last_ms) / 1000.0;
+        const double decay_units_per_sec = 0.2;
+        p->score = std::max(0.0, p->score - dt * decay_units_per_sec);
+        p->last_ms = n;
+    };
+    auto build_auth_sign_bytes = [&](const Bytes32& challenge, const Bytes32& node_id, std::vector<uint8_t>* out) {
+        if (!out)
+            return false;
+        out->clear();
+        const char* tag = "RPOV2:hello_auth:v1";
+        while (*tag)
+            out->push_back((uint8_t)*tag++);
+        out->insert(out->end(), challenge.v, challenge.v + 32);
+        out->insert(out->end(), node_id.v, node_id.v + 32);
+        return true;
+    };
+    auto get_rate = [&](int fd) -> PeerRateState& {
+        PeerRateState& rs = peer_rate[fd];
+        if (rs.last_ms == 0)
+        {
+            rs.tokens_sync = 20.0;
+            rs.tokens_tx = 20.0;
+            rs.tokens_consensus = 40.0;
+            rs.last_ms = now_ms();
+            rs.ban_score = 0;
+            rs.quarantine_until_ms = 0;
+        }
+        return rs;
+    };
+    auto penalize_peer = [&](int fd, int delta, const char* reason) {
+        PeerRateState& rs = get_rate(fd);
+        rs.ban_score += delta;
+        std::map<int, Bytes32>::const_iterator it_node = peer_node_id_by_fd.find(fd);
+        if (it_node == peer_node_id_by_fd.end())
+            it_node = peer_pending_node_id_by_fd.find(fd);
+        if (it_node != peer_node_id_by_fd.end())
+        {
+            const std::string node_key((const char*)it_node->second.v, 32);
+            PeerPenaltyPersist& ps = persist_penalty_by_node[node_key];
+            decay_persist(&ps);
+            ps.score += (double)delta;
+            ps.last_ms = now_ms();
+        }
+        const std::string ep = reactor.PeerEndpoint(fd);
+        if (!ep.empty())
+        {
+            PeerPenaltyPersist& pe = persist_penalty_by_endpoint[ep];
+            decay_persist(&pe);
+            pe.score += (double)delta;
+            pe.last_ms = now_ms();
+        }
+        if (rs.ban_score >= 40)
+        {
+            std::map<int, Bytes32>::iterator itid = peer_node_id_by_fd.find(fd);
+            if (itid != peer_node_id_by_fd.end())
+            {
+                peer_fd_by_node_id.erase(std::string((const char*)itid->second.v, 32));
+                peer_node_id_by_fd.erase(itid);
+            }
+            std::map<int, Bytes32>::iterator itp = peer_pending_node_id_by_fd.find(fd);
+            if (itp != peer_pending_node_id_by_fd.end())
+                peer_pending_node_id_by_fd.erase(itp);
+            peer_challenge_by_fd.erase(fd);
+            rs.quarantine_until_ms = now_ms() + 60000ULL;
+            if (it_node != peer_node_id_by_fd.end())
+            {
+                const std::string node_key((const char*)it_node->second.v, 32);
+                PeerPenaltyPersist& ps = persist_penalty_by_node[node_key];
+                ps.quarantine_until_ms = rs.quarantine_until_ms;
+            }
+            if (!ep.empty())
+            {
+                PeerPenaltyPersist& pe = persist_penalty_by_endpoint[ep];
+                pe.quarantine_until_ms = rs.quarantine_until_ms;
+            }
+            printf("peer_quarantine fd=%d ms=%llu reason=%s score=%d\n",
+                   fd,
+                   (unsigned long long)60000ULL,
+                   reason ? reason : "-",
+                   rs.ban_score);
+            reactor.Disconnect(fd);
+        }
+    };
+    auto allow_msg = [&](int fd, uint16_t msg_type) -> bool {
+        PeerRateState& rs = get_rate(fd);
+        const uint64_t n = now_ms();
+        if (rs.quarantine_until_ms > n)
+            return false;
+        const double dt = (n > rs.last_ms) ? ((double)(n - rs.last_ms) / 1000.0) : 0.0;
+        rs.last_ms = n;
+        rs.tokens_sync = std::min(40.0, rs.tokens_sync + dt * 10.0);
+        rs.tokens_tx = std::min(30.0, rs.tokens_tx + dt * 8.0);
+        rs.tokens_consensus = std::min(60.0, rs.tokens_consensus + dt * 6.0);
+        double* bucket = &rs.tokens_sync;
+        double cost = 1.0;
+        if (msg_type == WIRE_MSG_TX)
+        {
+            bucket = &rs.tokens_tx;
+            cost = 1.0;
+        }
+        else if (msg_type == WIRE_MSG_PROPOSE || msg_type == WIRE_MSG_VOTE || msg_type == WIRE_MSG_COMMIT)
+        {
+            bucket = &rs.tokens_consensus;
+            cost = (msg_type == WIRE_MSG_COMMIT) ? 4.0 : 2.0;
+        }
+        if (*bucket < cost)
+        {
+            penalize_peer(fd, 2, "rate_limit");
+            return false;
+        }
+        *bucket -= cost;
+        return true;
+    };
     reactor.SetMessageHandler([&](int peer_fd, const WireEnvelope& env) {
+        if (env.payload_len != env.payload.size())
+        {
+            printf("drop malformed payload_len_mismatch fd=%d\n", peer_fd);
+            penalize_peer(peer_fd, 5, "payload_len_mismatch");
+            return;
+        }
+        if (env.msg_type > WIRE_MSG_HELLO_AUTH)
+        {
+            printf("drop malformed msg_type=%u fd=%d\n", (unsigned)env.msg_type, peer_fd);
+            penalize_peer(peer_fd, 5, "unknown_msg_type");
+            return;
+        }
+        if (!allow_msg(peer_fd, env.msg_type))
+        {
+            printf("drop rate_limited fd=%d msg_type=%u\n", peer_fd, (unsigned)env.msg_type);
+            return;
+        }
         if (env.msg_type == WIRE_MSG_HELLO)
         {
+            if (env.payload.size() != 32)
+            {
+                printf("drop hello bad_size fd=%d\n", peer_fd);
+                penalize_peer(peer_fd, 10, "hello_bad_size");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            Bytes32 remote_id;
+            memcpy(remote_id.v, &env.payload[0], 32);
+            bool zero = true;
+            for (int i = 0; i < 32; ++i)
+                if (remote_id.v[i] != 0)
+                    zero = false;
+            if (zero || memcmp(remote_id.v, signer_id.v, 32) == 0)
+            {
+                printf("drop hello invalid_id fd=%d\n", peer_fd);
+                penalize_peer(peer_fd, 10, "hello_invalid_id");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            const std::string node_key((const char*)remote_id.v, 32);
+            PeerPenaltyPersist& pnode = persist_penalty_by_node[node_key];
+            decay_persist(&pnode);
+            if (pnode.quarantine_until_ms > now_ms())
+            {
+                printf("drop hello quarantined_node fd=%d\n", peer_fd);
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            std::string ep = reactor.PeerEndpoint(peer_fd);
+            if (!ep.empty())
+            {
+                PeerPenaltyPersist& pep = persist_penalty_by_endpoint[ep];
+                decay_persist(&pep);
+                if (pep.quarantine_until_ms > now_ms())
+                {
+                    printf("drop hello quarantined_endpoint fd=%d\n", peer_fd);
+                    reactor.Disconnect(peer_fd);
+                    return;
+                }
+            }
+            std::map<std::string, int>::const_iterator it_existing = peer_fd_by_node_id.find(node_key);
+            if (it_existing != peer_fd_by_node_id.end() && it_existing->second != peer_fd)
+            {
+                if (reactor.PeerEndpoint(it_existing->second).empty())
+                {
+                    peer_fd_by_node_id.erase(node_key);
+                }
+            }
+            it_existing = peer_fd_by_node_id.find(node_key);
+            if (it_existing != peer_fd_by_node_id.end() && it_existing->second != peer_fd)
+            {
+                printf("drop hello peer_id_collision fd=%d existing_fd=%d\n", peer_fd, it_existing->second);
+                penalize_peer(peer_fd, 10, "hello_peer_id_collision");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            peer_pending_node_id_by_fd[peer_fd] = remote_id;
+            Bytes32 challenge;
+            std::vector<uint8_t> chm;
+            WriteU64LE(&chm, (uint64_t)peer_fd);
+            WriteU64LE(&chm, now_ms());
+            chm.insert(chm.end(), signer_id.v, signer_id.v + 32);
+            chm.insert(chm.end(), remote_id.v, remote_id.v + 32);
+            if (!Sha256(chm, &challenge))
+            {
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            peer_challenge_by_fd[peer_fd] = challenge;
+            std::vector<uint8_t> cp;
+            if (!SerializeHelloChallengePayload(challenge, &cp))
+                return;
+            WireEnvelope out;
+            out.magic = WireMagicMainnet();
+            out.version = 1;
+            out.msg_type = WIRE_MSG_HELLO_CHALLENGE;
+            out.payload_len = (uint32_t)cp.size();
+            out.unix_ms = 0;
+            out.payload_hash = Bytes32();
+            out.payload.swap(cp);
+            (void)reactor.SendTo(peer_fd, out);
+            return;
+        }
+        if (env.msg_type == WIRE_MSG_HELLO_CHALLENGE)
+        {
+            Bytes32 challenge;
+            if (!ParseHelloChallengePayload(env.payload, &challenge))
+            {
+                penalize_peer(peer_fd, 8, "hello_challenge_parse_failed");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            std::vector<uint8_t> m;
+            if (!build_auth_sign_bytes(challenge, signer_id, &m))
+                return;
+            std::vector<uint8_t> sig;
+            if (!crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &sig))
+                return;
+            std::vector<uint8_t> ap;
+            if (!SerializeHelloAuthPayload(signer_id, challenge, sig, &ap))
+                return;
+            WireEnvelope out;
+            out.magic = WireMagicMainnet();
+            out.version = 1;
+            out.msg_type = WIRE_MSG_HELLO_AUTH;
+            out.payload_len = (uint32_t)ap.size();
+            out.unix_ms = 0;
+            out.payload_hash = Bytes32();
+            out.payload.swap(ap);
+            (void)reactor.SendTo(peer_fd, out);
+            return;
+        }
+        if (env.msg_type == WIRE_MSG_HELLO_AUTH)
+        {
+            Bytes32 node_id;
+            Bytes32 challenge;
+            std::vector<uint8_t> sig;
+            if (!ParseHelloAuthPayload(env.payload, &node_id, &challenge, &sig))
+            {
+                penalize_peer(peer_fd, 10, "hello_auth_parse_failed");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            std::map<int, Bytes32>::const_iterator itp = peer_pending_node_id_by_fd.find(peer_fd);
+            std::map<int, Bytes32>::const_iterator itc = peer_challenge_by_fd.find(peer_fd);
+            if (itp == peer_pending_node_id_by_fd.end() || itc == peer_challenge_by_fd.end())
+            {
+                penalize_peer(peer_fd, 10, "hello_auth_unexpected");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            if (memcmp(itp->second.v, node_id.v, 32) != 0 || memcmp(itc->second.v, challenge.v, 32) != 0)
+            {
+                penalize_peer(peer_fd, 10, "hello_auth_mismatch");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            std::vector<uint8_t> m;
+            if (!build_auth_sign_bytes(challenge, node_id, &m))
+            {
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            if (!crypto->VerifyEd25519(node_id.v,
+                                       m.empty() ? NULL : &m[0],
+                                       m.size(),
+                                       sig.empty() ? NULL : &sig[0],
+                                       sig.size()))
+            {
+                penalize_peer(peer_fd, 12, "hello_auth_bad_sig");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            peer_pending_node_id_by_fd.erase(peer_fd);
+            peer_challenge_by_fd.erase(peer_fd);
+            peer_node_id_by_fd[peer_fd] = node_id;
+            peer_fd_by_node_id[std::string((const char*)node_id.v, 32)] = peer_fd;
             std::string ep = reactor.PeerEndpoint(peer_fd);
             if (IsValidEndpoint(ep))
             {
@@ -1087,16 +1764,16 @@ int main(int argc, char** argv)
             std::vector<uint8_t> sign_msg;
             if (!BuildPeerListSignBytes(last_committed_round, signer_id, advertise, &sign_msg))
                 return;
-            std::vector<uint8_t> sig;
+            std::vector<uint8_t> psig;
             if (!crypto->SignEd25519(signer_priv,
                                      sign_msg.empty() ? NULL : &sign_msg[0],
                                      sign_msg.size(),
-                                     &sig))
+                                     &psig))
             {
                 return;
             }
             std::vector<uint8_t> p;
-            if (SerializePeerListPayload(last_committed_round, signer_id, advertise, sig, &p))
+            if (SerializePeerListPayload(last_committed_round, signer_id, advertise, psig, &p))
             {
                 WireEnvelope out;
                 out.magic = WireMagicMainnet();
@@ -1108,6 +1785,13 @@ int main(int argc, char** argv)
                 out.payload.swap(p);
                 (void)reactor.SendTo(peer_fd, out);
             }
+            return;
+        }
+        if (!peer_node_id_by_fd.count(peer_fd))
+        {
+            printf("drop unauthenticated fd=%d msg_type=%u\n", peer_fd, (unsigned)env.msg_type);
+            penalize_peer(peer_fd, 8, "unauthenticated_message");
+            reactor.Disconnect(peer_fd);
             return;
         }
         if (env.msg_type == WIRE_MSG_PEER_LIST)
@@ -1386,7 +2070,18 @@ int main(int argc, char** argv)
                        (unsigned long long)last_committed_round);
                 return;
             }
-            EnsureEpochTransitionForRound(batch.round);
+            if (!EnsureEpochTransitionForRound(batch.round, "propose"))
+            {
+                printf("drop propose epoch_transition_invalid round=%llu\n",
+                       (unsigned long long)batch.round);
+                return;
+            }
+            if (batch.mints.empty() || !IsValidatorForRound(batch.mints[0].miner_pubkey, batch.round))
+            {
+                printf("drop propose unauthorized_proposer round=%llu\n",
+                       (unsigned long long)batch.round);
+                return;
+            }
             if (!engine.Propose(batch))
             {
                 printf("drop propose invalid code=%d msg=%s\n",
@@ -1401,6 +2096,12 @@ int main(int argc, char** argv)
             if (!engine.ValidateAndVote(batch, &vote))
             {
                 printf("drop propose vote_build_failed\n");
+                return;
+            }
+            if (!IsValidatorForRound(signer_id, batch.round))
+            {
+                printf("sync_only skip_vote round=%llu\n",
+                       (unsigned long long)batch.round);
                 return;
             }
             vote.validator_id = signer_id;
@@ -1443,7 +2144,18 @@ int main(int argc, char** argv)
                        (unsigned long long)last_committed_round);
                 return;
             }
-            EnsureEpochTransitionForRound(vote.round);
+            if (!EnsureEpochTransitionForRound(vote.round, "vote"))
+            {
+                printf("drop vote epoch_transition_invalid round=%llu\n",
+                       (unsigned long long)vote.round);
+                return;
+            }
+            if (!IsValidatorForRound(vote.validator_id, vote.round))
+            {
+                printf("drop vote unauthorized_voter round=%llu\n",
+                       (unsigned long long)vote.round);
+                return;
+            }
             if (!vote_verifier.VerifyVote(vote))
             {
                 printf("drop vote bad_sig\n");
@@ -1480,6 +2192,12 @@ int main(int argc, char** argv)
                 if (!HasSupermajorityPower(epoch, qc))
                     return;
             }
+            if (!IsValidatorForRound(signer_id, itb->second.round))
+            {
+                printf("sync_only skip_commit_broadcast round=%llu\n",
+                       (unsigned long long)itb->second.round);
+                return;
+            }
             std::vector<uint8_t> commit_payload;
             if (!SerializeCommitPayload(itb->second, qc, &commit_payload))
                 return;
@@ -1511,7 +2229,12 @@ int main(int argc, char** argv)
                        (unsigned long long)last_committed_round);
                 return;
             }
-            EnsureEpochTransitionForRound(batch.round);
+            if (!EnsureEpochTransitionForRound(batch.round, "commit"))
+            {
+                printf("drop commit epoch_transition_invalid round=%llu\n",
+                       (unsigned long long)batch.round);
+                return;
+            }
             if (qc.round != batch.round || memcmp(qc.batch_hash.v, batch.batch_hash.v, 32) != 0)
             {
                 printf("drop commit qc_batch_mismatch\n");
@@ -1540,6 +2263,8 @@ int main(int argc, char** argv)
             }
             (void)AppendCommitPayloadCacheDedup(commit_payload_cache, env.payload);
             last_committed_round = batch.round;
+            last_progress_round = last_committed_round;
+            last_progress_time = time(NULL);
             known_batches.erase(Bytes32Key(batch.batch_hash));
             known_votes.erase(Bytes32Key(batch.batch_hash));
             known_vote_ids.erase(Bytes32Key(batch.batch_hash));
@@ -1586,24 +2311,107 @@ int main(int argc, char** argv)
     time_t start = time(NULL);
     time_t last_sync_tick = start;
     time_t last_autopropose_tick = start;
+    time_t last_log_rotate_tick = start;
+    int dynamic_autopropose_interval_sec = cfg.autopropose_interval_sec > 0 ? cfg.autopropose_interval_sec : 1;
+    size_t dynamic_max_spends_per_round = economics_policy.max_spends_per_round;
     while (true)
     {
         reactor.PollOnce();
+        const int base_interval_sec = cfg.autopropose_interval_sec > 0 ? cfg.autopropose_interval_sec : 1;
+        const uint64_t lag_now = (synced_last_round > last_committed_round) ? (synced_last_round - last_committed_round) : 0;
+        const time_t now = time(NULL);
+        const int no_progress_sec = (int)(now - last_progress_time);
+        int target_interval_sec = base_interval_sec;
+        if (peer_last_round.size() > 8)
+            target_interval_sec += base_interval_sec / 2;
+        if (peer_last_round.size() > 64)
+            target_interval_sec += base_interval_sec;
+        if (lag_now > 0)
+            target_interval_sec += 1;
+        if (no_progress_sec > (base_interval_sec * 3))
+        {
+            int backoff = no_progress_sec / base_interval_sec;
+            if (backoff < 1)
+                backoff = 1;
+            target_interval_sec += backoff;
+        }
+        const int max_interval_sec = base_interval_sec * 6;
+        if (target_interval_sec > max_interval_sec)
+            target_interval_sec = max_interval_sec;
+        if (target_interval_sec < 1)
+            target_interval_sec = 1;
+        if (target_interval_sec != dynamic_autopropose_interval_sec)
+        {
+            dynamic_autopropose_interval_sec = target_interval_sec;
+            printf("round_timing_adjust interval_sec=%d base_sec=%d peers=%zu lag=%llu no_progress_sec=%d last_progress_round=%llu\n",
+                   dynamic_autopropose_interval_sec,
+                   base_interval_sec,
+                   peer_last_round.size(),
+                   (unsigned long long)lag_now,
+                   no_progress_sec,
+                   (unsigned long long)last_progress_round);
+        }
+
+        size_t target_max_spends = economics_policy.max_spends_per_round;
+        if (peer_last_round.size() > 8)
+            target_max_spends = (target_max_spends * 3) / 4;
+        if (peer_last_round.size() > 64)
+            target_max_spends = target_max_spends / 2;
+        if (lag_now > 0)
+            target_max_spends = (target_max_spends * 3) / 4;
+        if (no_progress_sec > (base_interval_sec * 3))
+            target_max_spends = target_max_spends / 2;
+        const size_t kMinDynamicSpends = 16;
+        if (target_max_spends < kMinDynamicSpends)
+            target_max_spends = kMinDynamicSpends;
+        if (target_max_spends > economics_policy.max_spends_per_round)
+            target_max_spends = economics_policy.max_spends_per_round;
+        if (target_max_spends != dynamic_max_spends_per_round)
+        {
+            dynamic_max_spends_per_round = target_max_spends;
+            printf("round_payload_adjust max_spends=%zu base_max_spends=%zu peers=%zu lag=%llu no_progress_sec=%d\n",
+                   dynamic_max_spends_per_round,
+                   economics_policy.max_spends_per_round,
+                   peer_last_round.size(),
+                   (unsigned long long)lag_now,
+                   no_progress_sec);
+        }
+
         if (cfg.autopropose != 0 &&
             last_committed_round >= synced_last_round &&
-            (time(NULL) - last_autopropose_tick) >= cfg.autopropose_interval_sec)
+            (time(NULL) - last_autopropose_tick) >= dynamic_autopropose_interval_sec)
         {
             RoundBatch batch;
             const uint64_t target_round = last_committed_round + 1;
-            EnsureEpochTransitionForRound(target_round);
+            if (!EnsureEpochTransitionForRound(target_round, "autopropose"))
+            {
+                printf("drop autopropose epoch_transition_invalid round=%llu\n",
+                       (unsigned long long)target_round);
+                continue;
+            }
+            if (!IsValidatorForRound(signer_id, target_round))
+            {
+                printf("sync_only skip_autopropose round=%llu\n",
+                       (unsigned long long)target_round);
+                last_autopropose_tick = time(NULL);
+                continue;
+            }
             bool have_pending = GetPendingRound(target_round, &batch);
             if (!have_pending)
             {
                 batch.round = target_round;
-                std::vector<SpendTx> drained_spends = mempool.DrainSpends(economics_policy.max_spends_per_round);
+                std::vector<SpendTx> drained_spends = mempool.DrainSpends(dynamic_max_spends_per_round);
                 batch.spends = drained_spends;
                 MintTx mint;
-                mint.output.value = 1;
+                const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
+                uint64_t mint_budget = subsidy;
+                uint64_t reserve_budget = 0;
+                if (store.ReadMintBudget(&reserve_budget))
+                {
+                    if (mint_budget > reserve_budget)
+                        mint_budget = reserve_budget;
+                }
+                mint.output.value = mint_budget;
                 for (int i = 0; i < 32; ++i)
                 {
                     mint.output.commitment.v[i] = (uint8_t)(signer_id.v[i] ^ (uint8_t)(batch.round + i));
@@ -1615,16 +2423,18 @@ int main(int argc, char** argv)
                     last_autopropose_tick = time(NULL);
                     continue;
                 }
-                const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
                 mint.target = expected_target;
                 memset(mint.output.range_proof.v, 0, 64);
                 mint.mint_nonce = (uint64_t)time(NULL);
                 mint.miner_pubkey = signer_id;
                 mint.signature = BuildMintSigLocal(*crypto, signer_priv, mint);
                 batch.mints.push_back(mint);
-                printf("autopropose_prepare round=%llu subsidy=%llu mint_value=%llu target=%s miner=%s\n",
+                printf("autopropose_prepare round=%llu subsidy=%llu tax_ppm=%llu burn_pool_refill=%llu reserve_budget=%llu mint_value=%llu target=%s miner=%s\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)subsidy,
+                       (unsigned long long)TransferTaxPpmForRound(batch.round, economics_policy),
+                       (unsigned long long)SumBatchFees(batch),
+                       (unsigned long long)reserve_budget,
                        (unsigned long long)mint.output.value,
                        Hex32(mint.target).c_str(),
                        Hex32(mint.miner_pubkey).c_str());
@@ -1699,17 +2509,63 @@ int main(int argc, char** argv)
             }
             last_autopropose_tick = time(NULL);
         }
-        if ((time(NULL) - last_sync_tick) >= 5)
+        const int sync_period_sec = (synced_last_round > last_committed_round) ? 1 : 5;
+        if ((time(NULL) - last_sync_tick) >= sync_period_sec)
         {
             BroadcastSyncStatus();
             TryCatchUpFromCache();
             PersistKnownPeers();
+            const uint64_t reg_sz = FileSizeBytes(registry);
+            const uint64_t log_sz = FileSizeBytes(commitlog);
+            const uint64_t cache_sz = FileSizeBytes(commit_payload_cache);
+            const uint64_t synclog_sz = FileSizeBytes(sync_cache);
+            const uint64_t utxo_est = reg_sz / 264ULL;
             printf("sync_tick local_round=%llu synced_round=%llu lag=%llu cache_entries=%zu\n",
                    (unsigned long long)last_committed_round,
                    (unsigned long long)synced_last_round,
                    (unsigned long long)((synced_last_round > last_committed_round) ? (synced_last_round - last_committed_round) : 0),
                    CountCommitPayloadCacheEntries(commit_payload_cache));
+            printf("disk_stats registry_bytes=%llu commitlog_bytes=%llu cache_bytes=%llu sync_log_bytes=%llu utxo_est=%llu\n",
+                   (unsigned long long)reg_sz,
+                   (unsigned long long)log_sz,
+                   (unsigned long long)cache_sz,
+                   (unsigned long long)synclog_sz,
+                   (unsigned long long)utxo_est);
             last_sync_tick = time(NULL);
+        }
+        if ((time(NULL) - last_log_rotate_tick) >= 60)
+        {
+            const uint64_t commitlog_sz = FileSizeBytes(commitlog);
+            const uint64_t synclog_sz = FileSizeBytes(sync_cache);
+            const uint64_t kCommitLogMaxBytes = 256ULL * 1024ULL * 1024ULL;
+            const uint64_t kSyncLogMaxBytes = 128ULL * 1024ULL * 1024ULL;
+            const uint64_t keep_commit_rounds = 200000ULL;
+            const uint64_t keep_sync_rounds = 100000ULL;
+            if (commitlog_sz > kCommitLogMaxBytes)
+            {
+                const uint64_t keep_from = (last_committed_round > keep_commit_rounds) ? (last_committed_round - keep_commit_rounds + 1) : 1;
+                if (RotateCommitLogWithCheckpoint(commitlog, commitlog_checkpoint, crypto.get(), keep_from))
+                    printf("log_rotate_ok file=%s keep_from_round=%llu new_bytes=%llu checkpoint=%s\n",
+                           commitlog.c_str(),
+                           (unsigned long long)keep_from,
+                           (unsigned long long)FileSizeBytes(commitlog),
+                           commitlog_checkpoint.c_str());
+                else
+                    printf("log_rotate_failed file=%s\n", commitlog.c_str());
+            }
+            if (synclog_sz > kSyncLogMaxBytes)
+            {
+                const uint64_t keep_from = (synced_last_round > keep_sync_rounds) ? (synced_last_round - keep_sync_rounds + 1) : 1;
+                if (RotateCommitLogWithCheckpoint(sync_cache, sync_cache_checkpoint, crypto.get(), keep_from))
+                    printf("log_rotate_ok file=%s keep_from_round=%llu new_bytes=%llu checkpoint=%s\n",
+                           sync_cache.c_str(),
+                           (unsigned long long)keep_from,
+                           (unsigned long long)FileSizeBytes(sync_cache),
+                           sync_cache_checkpoint.c_str());
+                else
+                    printf("log_rotate_failed file=%s\n", sync_cache.c_str());
+            }
+            last_log_rotate_tick = time(NULL);
         }
         if (cfg.duration_sec > 0 && (int)(time(NULL) - start) >= cfg.duration_sec)
             break;

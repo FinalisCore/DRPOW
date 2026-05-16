@@ -18,7 +18,10 @@ struct EconomicsPolicy {
     Bytes32 max_target;
     Bytes32 min_target;
     uint64_t initial_subsidy;
+    uint64_t subsidy_floor;
     uint64_t halving_interval_rounds;
+    uint64_t initial_transfer_tax_ppm;
+    uint64_t min_transfer_tax_ppm;
     uint64_t target_window_rounds;
     uint64_t target_mints_per_window;
     uint64_t target_adjust_up_ppm_limit;
@@ -28,6 +31,7 @@ struct EconomicsPolicy {
 
 EconomicsPolicy DefaultEconomicsPolicy();
 uint64_t MintSubsidyForRound(uint64_t round, const EconomicsPolicy& policy);
+uint64_t TransferTaxPpmForRound(uint64_t round, const EconomicsPolicy& policy);
 bool ValidateBatchEconomics(const RoundBatch& batch, const EconomicsPolicy& policy);
 bool ValidateBatchFeePolicy(const RoundBatch& batch, const EconomicsPolicy& policy);
 bool NextPowTargetDeterministic(const Bytes32& prev_target,

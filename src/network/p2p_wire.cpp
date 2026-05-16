@@ -552,4 +552,50 @@ bool ParseSpendTxSubmitPayload(const std::vector<uint8_t>& in, SpendTx* out)
     return true;
 }
 
+bool SerializeHelloChallengePayload(const Bytes32& challenge, std::vector<uint8_t>* out)
+{
+    if (!out)
+        return false;
+    out->assign(challenge.v, challenge.v + 32);
+    return true;
+}
+
+bool ParseHelloChallengePayload(const std::vector<uint8_t>& in, Bytes32* challenge)
+{
+    if (!challenge || in.size() != 32)
+        return false;
+    memcpy(challenge->v, &in[0], 32);
+    return true;
+}
+
+bool SerializeHelloAuthPayload(const Bytes32& node_id, const Bytes32& challenge, const std::vector<uint8_t>& signature, std::vector<uint8_t>* out)
+{
+    if (!out)
+        return false;
+    out->clear();
+    out->insert(out->end(), node_id.v, node_id.v + 32);
+    out->insert(out->end(), challenge.v, challenge.v + 32);
+    WriteU64LE(out, (uint64_t)signature.size());
+    out->insert(out->end(), signature.begin(), signature.end());
+    return true;
+}
+
+bool ParseHelloAuthPayload(const std::vector<uint8_t>& in, Bytes32* node_id, Bytes32* challenge, std::vector<uint8_t>* signature)
+{
+    if (!node_id || !challenge || !signature || in.size() < 32 + 32 + 8)
+        return false;
+    size_t off = 0;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, node_id->v, 32))
+        return false;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, challenge->v, 32))
+        return false;
+    uint64_t sig_n = 0;
+    if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))
+        return false;
+    if (sig_n > in.size() || off + (size_t)sig_n != in.size())
+        return false;
+    signature->assign(in.begin() + off, in.end());
+    return true;
+}
+
 }  

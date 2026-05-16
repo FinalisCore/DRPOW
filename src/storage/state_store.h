@@ -45,6 +45,11 @@ public:
     virtual bool WriteRoundCommit(const RoundCommitRecord& record) = 0;
     virtual bool WriteEquivocationEvidence(const EquivocationEvidenceRecord& record) = 0;
     virtual bool ReadStateRoot(Bytes32* out_root) const = 0;
+    virtual bool ReadMintBudget(uint64_t* out_budget) const
+    {
+        (void)out_budget;
+        return false;
+    }
     virtual bool ExportVerifiedCommitRecordsFromRound(uint64_t from_round,
                                                       size_t max_records,
                                                       std::vector<RoundCommitRecord>* out) const

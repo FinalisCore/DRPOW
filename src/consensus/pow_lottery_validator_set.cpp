@@ -1,4 +1,6 @@
 #include "pow_lottery_validator_set.h"
+#include <set>
+#include <string>
 #include <string.h>
 
 namespace rpov2 {
@@ -16,6 +18,30 @@ static bool SameValidators(const std::vector<Validator>& a, const std::vector<Va
     return true;
 }
 
+static bool ValidateValidatorVector(const std::vector<Validator>& validators)
+{
+    std::set<std::string> seen;
+    for (size_t i = 0; i < validators.size(); ++i)
+    {
+        bool all_zero = true;
+        for (int j = 0; j < 32; ++j)
+        {
+            if (validators[i].validator_id.v[j] != 0)
+            {
+                all_zero = false;
+                break;
+            }
+        }
+        if (all_zero || validators[i].voting_power == 0)
+            return false;
+        const std::string key((const char*)validators[i].validator_id.v, 32);
+        if (seen.count(key))
+            return false;
+        seen.insert(key);
+    }
+    return true;
+}
+
 PowLotteryValidatorSet::PowLotteryValidatorSet(uint64_t epoch_length)
     : epoch_length_(epoch_length)
 {
@@ -23,7 +49,7 @@ PowLotteryValidatorSet::PowLotteryValidatorSet(uint64_t epoch_length)
 
 bool PowLotteryValidatorSet::InstallEpoch(uint64_t epoch, const std::vector<Validator>& validators)
 {
-    if (epoch_length_ == 0 || validators.empty())
+    if (epoch_length_ == 0 || validators.empty() || !ValidateValidatorVector(validators))
         return false;
 
     // Deterministic transition policy:

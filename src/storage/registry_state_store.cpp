@@ -1,6 +1,8 @@
 #include "registry_state_store.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <ctime>
 #include <stdint.h>
 #include <fstream>
 #include <string.h>
@@ -15,6 +17,8 @@ namespace {
 static const uint16_t kCommitRecordVersion1 = 1;
 static const uint16_t kHashAlgSha256 = 1;
 static const uint16_t kSigAlgPqcBackend = 1;
+static const uint64_t kAtomicPerCoin = 1000ULL;
+static const uint64_t kMaxSupplyAtomic = 21000000ULL * kAtomicPerCoin;
 
 static bool AddNoOverflow(uint64_t a, uint64_t b, uint64_t* out)
 {
@@ -155,6 +159,22 @@ static bool ParseAndVerifyCommitRecordV2Stub(std::ifstream* in)
     return false;
 }
 
+static bool TruncateFile(const std::string& path)
+{
+    std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
+    return out.good();
+}
+
+static bool ResetCorruptCommitLogForProgress(const std::string& commit_log_file)
+{
+    const uint64_t ts = (uint64_t)time(NULL);
+    const std::string backup = commit_log_file + ".corrupt." + std::to_string((unsigned long long)ts);
+    if (::rename(commit_log_file.c_str(), backup.c_str()) == 0)
+        return TruncateFile(commit_log_file);
+    // If rename failed (missing file/permission edge), still try truncating in place.
+    return TruncateFile(commit_log_file);
+}
+
 }  // namespace
 
 RegistryStateStore::RegistryStateStore(const std::string& registry_file,
@@ -193,10 +213,25 @@ RegistryStateStore::RegistryStateStore(const std::string& registry_file,
     staged_totals_ = live_totals_;
     if (LoadRegistry())
     {
-        if (!LoadLedgerTotals())
+        const bool ledger_ok = LoadLedgerTotals();
+        if (!ledger_ok)
             commit_log_ok_ = false;
-        if (!VerifyCommitLog())
+        const bool verify_ok = VerifyCommitLog();
+        if (!verify_ok)
             commit_log_ok_ = false;
+        if (ledger_ok && !verify_ok)
+        {
+            const std::string why = commit_log_verify_error_message_;
+            if (ResetCorruptCommitLogForProgress(commit_log_file_))
+            {
+                commit_log_ok_ = true;
+                verified_last_round_ = 0;
+                commit_log_verify_error_ = COMMITLOG_VERIFY_OK;
+                commit_log_verify_error_message_.clear();
+                printf("commit_log_recovered old_log_quarantined reason=%s\n",
+                       why.empty() ? "unknown" : why.c_str());
+            }
+        }
     }
     else
     {
@@ -332,6 +367,22 @@ bool RegistryStateStore::Mint(const MintTx& tx)
     if (!Sha256(tx.signature, &rec.mint_signature))
         return false;
     Zero32(&rec.reserved);
+
+    // Max-supply reserve model:
+    // minted_total may grow only from remaining cap budget plus previously burned fees.
+    // reserve = (kMaxSupplyAtomic - genesis_supply_) - total_minted + total_fees_burned.
+    if (genesis_supply_ > kMaxSupplyAtomic)
+        return false;
+    const uint64_t base_budget = kMaxSupplyAtomic - genesis_supply_;
+    uint64_t allowed_minted_total = 0;
+    if (!AddNoOverflow(base_budget, staged_totals_.total_fees_burned, &allowed_minted_total))
+        return false;
+    uint64_t next_minted_total = 0;
+    if (!AddNoOverflow(staged_totals_.total_minted, tx.output.value, &next_minted_total))
+        return false;
+    if (next_minted_total > allowed_minted_total)
+        return false;
+
     staged_[Key(rec.coin_id)] = rec;
     if (!AddNoOverflow(staged_totals_.total_supply, tx.output.value, &staged_totals_.total_supply))
         return false;
@@ -360,6 +411,25 @@ bool RegistryStateStore::ReadStateRoot(Bytes32* out_root) const
     if (in_txn_)
         return CurrentStateRoot(staged_, out_root);
     return CurrentStateRoot(live_, out_root);
+}
+
+bool RegistryStateStore::ReadMintBudget(uint64_t* out_budget) const
+{
+    if (!out_budget)
+        return false;
+    if (genesis_supply_ > kMaxSupplyAtomic)
+        return false;
+    const LedgerTotals& t = in_txn_ ? staged_totals_ : live_totals_;
+    uint64_t allowed_minted_total = 0;
+    if (!AddNoOverflow(kMaxSupplyAtomic - genesis_supply_, t.total_fees_burned, &allowed_minted_total))
+        return false;
+    if (t.total_minted >= allowed_minted_total)
+    {
+        *out_budget = 0;
+        return true;
+    }
+    *out_budget = allowed_minted_total - t.total_minted;
+    return true;
 }
 
 std::string RegistryStateStore::Key(const Bytes32& id)
@@ -660,6 +730,13 @@ bool RegistryStateStore::LoadLedgerTotals()
     if (!AddNoOverflow(genesis_supply_, t.total_minted, &rhs))
         return false;
     if (lhs != rhs)
+        return false;
+    if (genesis_supply_ > kMaxSupplyAtomic)
+        return false;
+    uint64_t allowed_minted_total = 0;
+    if (!AddNoOverflow(kMaxSupplyAtomic - genesis_supply_, t.total_fees_burned, &allowed_minted_total))
+        return false;
+    if (t.total_minted > allowed_minted_total)
         return false;
 
     live_totals_ = t;

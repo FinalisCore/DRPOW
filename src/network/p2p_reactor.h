@@ -24,6 +24,7 @@ public:
     void Stop();
     bool Broadcast(const WireEnvelope& env);
     bool SendTo(int fd, const WireEnvelope& env);
+    void Disconnect(int fd);
     void SetMessageHandler(const MessageHandler& handler);
     void AddPeer(const std::string& endpoint);
     std::vector<std::string> KnownPeers() const;
@@ -36,6 +37,7 @@ private:
         bool saw_hello;
         bool outbound;
         std::string endpoint;
+        uint64_t hello_deadline_ms;
     };
 
     int listen_fd_;

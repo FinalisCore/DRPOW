@@ -7,6 +7,7 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <glob.h>
+#include <sys/stat.h>
 
 #include <fstream>
 #include <string>
@@ -19,6 +20,7 @@
 #include "rpov2/tx_codec.h"
 #include "rpov2/tx_types.h"
 #include "rpov2/wallet.h"
+#include "economics_policy.h"
 
 using namespace rpov2;
 
@@ -33,7 +35,7 @@ static void Usage(const char* bin)
     printf("  %s mempool demo\n", bin);
     printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", bin);
     printf("  %s tx status <tx_hex_file> [node_data_dir]\n", bin);
-    printf("  %s send --to <address> --amount <decimal> [--fee <decimal>] [--data-dir <dir>] [--node <host:port>] [--magic <hex>]\n", bin);
+    printf("  %s send --to <address> --amount <decimal> [--data-dir <dir>] [--node-data-dir <dir>] [--node <host:port>] [--magic <hex>]\n", bin);
     printf("  %s getbalance [data_dir] [network_magic_hex] [registry_file]\n", bin);
     printf("  %s getutxo [data_dir] [network_magic_hex] [registry_file]\n", bin);
 }
@@ -224,6 +226,7 @@ static int WalletSendCmd(const char* to_address,
                          uint64_t amount,
                          uint64_t fee,
                          const char* dir,
+                         const char* node_data_dir,
                          uint32_t magic,
                          const char* registry_file_opt);
 
@@ -370,6 +373,39 @@ static bool LoadCommitPayloadCache(const std::string& cache_file, std::vector< s
     }
 }
 
+static uint64_t DetectNextRoundFromCommitCache(const std::string& node_data_dir)
+{
+    const std::string cache_file = node_data_dir + "/commit_payload_cache.bin";
+    std::vector< std::vector<uint8_t> > payloads;
+    if (!LoadCommitPayloadCache(cache_file, &payloads) || payloads.empty())
+        return 1;
+    uint64_t max_round = 0;
+    for (size_t i = 0; i < payloads.size(); ++i)
+    {
+        RoundBatch b;
+        QuorumCertificate qc;
+        if (!ParseCommitPayload(payloads[i], &b, &qc))
+            continue;
+        if (b.round > max_round)
+            max_round = b.round;
+    }
+    return max_round + 1;
+}
+
+static bool IsCommitCacheFresh(const std::string& node_data_dir, int max_age_sec)
+{
+    const std::string cache_file = node_data_dir + "/commit_payload_cache.bin";
+    struct stat st;
+    if (stat(cache_file.c_str(), &st) != 0)
+        return false;
+    if (st.st_size <= 0)
+        return false;
+    const time_t now = time(NULL);
+    if (now <= st.st_mtime)
+        return true;
+    return (now - st.st_mtime) <= max_age_sec;
+}
+
 static int TxStatusCmd(const char* tx_hex_file, const char* node_data_dir)
 {
     std::ifstream in(tx_hex_file);
@@ -440,8 +476,9 @@ static int SendCmd(int argc, char** argv)
 {
     std::string to;
     std::string amount_s;
-    std::string fee_s = "0.001";
+    std::string fee_s;
     std::string data_dir = "./data_seed";
+    std::string node_data_dir;
     std::string node_ep = "127.0.0.1:29101";
     std::string magic_s = "52504f57";
 
@@ -456,6 +493,8 @@ static int SendCmd(int argc, char** argv)
             fee_s = argv[++i];
         else if (a == "--data-dir" && i + 1 < argc)
             data_dir = argv[++i];
+        else if (a == "--node-data-dir" && i + 1 < argc)
+            node_data_dir = argv[++i];
         else if (a == "--node" && i + 1 < argc)
             node_ep = argv[++i];
         else if (a == "--magic" && i + 1 < argc)
@@ -469,7 +508,7 @@ static int SendCmd(int argc, char** argv)
     if (to.empty() || amount_s.empty())
     {
         printf("send usage:\n");
-        printf("  send --to <address> --amount <decimal> [--fee <decimal>] [--data-dir <dir>] [--node <host:port>] [--magic <hex>]\n");
+        printf("  send --to <address> --amount <decimal> [--data-dir <dir>] [--node-data-dir <dir>] [--node <host:port>] [--magic <hex>]\n");
         return 51;
     }
     uint64_t amount = 0, fee = 0;
@@ -478,11 +517,13 @@ static int SendCmd(int argc, char** argv)
         printf("send_error: bad_amount\n");
         return 52;
     }
-    if (!ParseAmountAtomic3(fee_s, &fee))
+    if (!fee_s.empty() && !ParseAmountAtomic3(fee_s, &fee))
     {
         printf("send_error: bad_fee\n");
         return 53;
     }
+    if (!fee_s.empty())
+        printf("send_notice: manual_fee_ignored policy=20pct_burn_tax\n");
     if (amount == 0)
     {
         printf("send_error: zero_amount\n");
@@ -490,7 +531,13 @@ static int SendCmd(int argc, char** argv)
     }
     const uint32_t magic = ParseMagic(magic_s.c_str());
     const std::string registry = ResolveRegistryPath(data_dir.c_str(), NULL);
-    int rc = WalletSendCmd(to.c_str(), amount, fee, data_dir.c_str(), magic, registry.c_str());
+    if (node_data_dir.empty())
+    {
+        node_data_dir = data_dir;
+        if (!IsCommitCacheFresh(node_data_dir, 30))
+            printf("send_warning: node_data_dir_not_set_and_commit_cache_not_fresh using=%s\n", node_data_dir.c_str());
+    }
+    int rc = WalletSendCmd(to.c_str(), amount, fee, data_dir.c_str(), node_data_dir.c_str(), magic, registry.c_str());
     if (rc != 0)
         return rc;
     std::string draft;
@@ -729,8 +776,9 @@ static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file
 
 static int WalletSendCmd(const char* to_address,
                          uint64_t amount,
-                         uint64_t fee,
+                         uint64_t fee_ignored,
                          const char* dir,
+                         const char* node_data_dir,
                          uint32_t magic,
                          const char* registry_file_opt)
 {
@@ -765,7 +813,12 @@ static int WalletSendCmd(const char* to_address,
         return 5;
     }
 
-    uint64_t required = amount + fee;
+    (void)fee_ignored;
+    const uint64_t next_round = DetectNextRoundFromCommitCache(std::string(node_data_dir ? node_data_dir : dir));
+    const EconomicsPolicy policy = DefaultEconomicsPolicy();
+    const uint64_t tax_ppm = TransferTaxPpmForRound(next_round, policy);
+    const uint64_t burn_tax = (amount * tax_ppm + 999999ULL) / 1000000ULL;
+    uint64_t required = amount + burn_tax;
     if (balance < required)
     {
         printf("send_error: insufficient_funds balance=%llu required=%llu\n",
@@ -775,8 +828,9 @@ static int WalletSendCmd(const char* to_address,
     }
 
     SpendTx tx;
+    tx.transfer_amount = amount;
     tx.timestamp = (uint64_t)time(NULL);
-    tx.fee = fee;
+    tx.fee = burn_tax;
     tx.sum_proof.push_back(1);  // prototype marker
 
     uint64_t selected = 0;
@@ -863,11 +917,13 @@ static int WalletSendCmd(const char* to_address,
     printf("send_draft_created file=%s\n", out_path.c_str());
     printf("send_to=%s\n", to_address);
     printf("send_amount=%llu\n", (unsigned long long)amount);
-    printf("send_fee=%llu\n", (unsigned long long)fee);
+    printf("send_tax_ppm=%llu\n", (unsigned long long)tax_ppm);
+    printf("send_next_round_estimate=%llu\n", (unsigned long long)next_round);
+    printf("send_burn_tax=%llu\n", (unsigned long long)burn_tax);
     printf("send_inputs=%zu\n", tx.inputs.size());
     printf("send_outputs=%zu\n", tx.outputs.size());
     printf("send_change=%llu\n", (unsigned long long)change);
-    printf("send_note=prototype_draft_not_broadcast\n");
+    printf("send_note=tax20_applied_autosubmit_path_supported\n");
     return 0;
 }
 
@@ -952,7 +1008,7 @@ int main(int argc, char** argv)
             const char* dir = (argc >= 7) ? argv[6] : kDefaultWalletDir;
             const char* magic_arg = (argc >= 8) ? argv[7] : NULL;
             const char* registry_file = (argc >= 9) ? argv[8] : NULL;
-            return WalletSendCmd(to_address, amount, fee, dir, ParseMagic(magic_arg), registry_file);
+            return WalletSendCmd(to_address, amount, fee, dir, dir, ParseMagic(magic_arg), registry_file);
         }
 
         WalletUsage(argv[0]);

@@ -43,6 +43,7 @@ public:
     virtual bool WriteRoundCommit(const RoundCommitRecord& record);
     virtual bool WriteEquivocationEvidence(const EquivocationEvidenceRecord& record);
     virtual bool ReadStateRoot(Bytes32* out_root) const;
+    virtual bool ReadMintBudget(uint64_t* out_budget) const;
     uint64_t LastVerifiedCommitRound() const { return verified_last_round_; }
     virtual bool ExportVerifiedCommitRecordsFromRound(uint64_t from_round, size_t max_records, std::vector<RoundCommitRecord>* out) const;
     CommitLogVerifyError commit_log_verify_error() const { return commit_log_verify_error_; }
