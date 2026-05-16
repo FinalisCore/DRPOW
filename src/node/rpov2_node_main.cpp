@@ -1368,7 +1368,9 @@ int main(int argc, char** argv)
             EnsureEpochTransitionForRound(batch.round);
             if (!engine.Propose(batch))
             {
-                printf("drop propose invalid code=%d\n", (int)engine.last_reject_code());
+                printf("drop propose invalid code=%d msg=%s\n",
+                       (int)engine.last_reject_code(),
+                       engine.last_reject_message().c_str());
                 return;
             }
             const std::string batch_key = Bytes32Key(batch.batch_hash);
@@ -1510,7 +1512,9 @@ int main(int argc, char** argv)
             }
             if (!engine.Commit(batch, qc))
             {
-                printf("drop commit invalid code=%d\n", (int)engine.last_reject_code());
+                printf("drop commit invalid code=%d msg=%s\n",
+                       (int)engine.last_reject_code(),
+                       engine.last_reject_message().c_str());
                 return;
             }
             (void)AppendCommitPayloadCacheDedup(commit_payload_cache, env.payload);
