@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <glob.h>
 
 #include <fstream>
 #include <string>
@@ -31,6 +32,8 @@ static void Usage(const char* bin)
     printf("  %s address validate <address> [network_magic_hex]\n", bin);
     printf("  %s mempool demo\n", bin);
     printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", bin);
+    printf("  %s tx status <tx_hex_file> [node_data_dir]\n", bin);
+    printf("  %s send --to <address> --amount <decimal> [--fee <decimal>] [--data-dir <dir>] [--node <host:port>] [--magic <hex>]\n", bin);
     printf("  %s getbalance [data_dir] [network_magic_hex] [registry_file]\n", bin);
     printf("  %s getutxo [data_dir] [network_magic_hex] [registry_file]\n", bin);
 }
@@ -156,6 +159,74 @@ static bool DecodeHexLine(const std::string& s, std::vector<uint8_t>* out)
     return true;
 }
 
+// CLI amount uses 3 decimal places: 1.234 coin => 1234 atomic units.
+static bool ParseAmountAtomic3(const std::string& s, uint64_t* out_units)
+{
+    if (!out_units || s.empty())
+        return false;
+    size_t dot = s.find('.');
+    std::string ip = (dot == std::string::npos) ? s : s.substr(0, dot);
+    std::string fp = (dot == std::string::npos) ? "" : s.substr(dot + 1);
+    if (ip.empty())
+        ip = "0";
+    if (fp.size() > 3)
+        return false;
+    for (size_t i = 0; i < ip.size(); ++i)
+        if (ip[i] < '0' || ip[i] > '9')
+            return false;
+    for (size_t i = 0; i < fp.size(); ++i)
+        if (fp[i] < '0' || fp[i] > '9')
+            return false;
+    while (fp.size() < 3)
+        fp.push_back('0');
+    uint64_t i_part = (uint64_t)strtoull(ip.c_str(), NULL, 10);
+    uint64_t f_part = (uint64_t)strtoull(fp.c_str(), NULL, 10);
+    if (i_part > (UINT64_MAX / 1000ULL))
+        return false;
+    uint64_t v = i_part * 1000ULL;
+    if (UINT64_MAX - v < f_part)
+        return false;
+    *out_units = v + f_part;
+    return true;
+}
+
+static bool FindLatestOutboxFile(const std::string& data_dir, std::string* out_path)
+{
+    if (!out_path)
+        return false;
+    std::string pattern = data_dir + "/outbox_spendtx_*.hex";
+    glob_t g;
+    memset(&g, 0, sizeof(g));
+    if (glob(pattern.c_str(), 0, NULL, &g) != 0 || g.gl_pathc == 0)
+    {
+        globfree(&g);
+        return false;
+    }
+    std::string best = g.gl_pathv[0];
+    for (size_t i = 1; i < g.gl_pathc; ++i)
+    {
+        std::string p = g.gl_pathv[i];
+        if (p > best)
+            best = p;
+    }
+    globfree(&g);
+    *out_path = best;
+    return true;
+}
+
+struct LocalUtxo {
+    Bytes32 coin_id;
+    uint64_t value;
+    Bytes32 owner_pubkey;
+};
+
+static int WalletSendCmd(const char* to_address,
+                         uint64_t amount,
+                         uint64_t fee,
+                         const char* dir,
+                         uint32_t magic,
+                         const char* registry_file_opt);
+
 static int TxSubmitCmd(const char* tx_hex_file, const char* node_endpoint, uint32_t network_magic)
 {
     std::ifstream in(tx_hex_file);
@@ -272,11 +343,164 @@ static int TxSubmitCmd(const char* tx_hex_file, const char* node_endpoint, uint3
     return 0;
 }
 
-struct LocalUtxo {
-    Bytes32 coin_id;
-    uint64_t value;
-    Bytes32 owner_pubkey;
-};
+static bool LoadCommitPayloadCache(const std::string& cache_file, std::vector< std::vector<uint8_t> >* out_payloads)
+{
+    if (!out_payloads)
+        return false;
+    out_payloads->clear();
+    std::ifstream in(cache_file.c_str(), std::ios::binary);
+    if (!in.good())
+        return true;
+    while (true)
+    {
+        uint32_t n = 0;
+        in.read((char*)&n, sizeof(n));
+        if (in.eof())
+            return true;
+        if (!in.good())
+            return false;
+        if (n > (16 * 1024 * 1024))
+            return false;
+        std::vector<uint8_t> p(n);
+        if (n > 0)
+            in.read((char*)&p[0], (std::streamsize)n);
+        if (!in.good())
+            return false;
+        out_payloads->push_back(p);
+    }
+}
+
+static int TxStatusCmd(const char* tx_hex_file, const char* node_data_dir)
+{
+    std::ifstream in(tx_hex_file);
+    if (!in.good())
+    {
+        printf("tx_status_error: tx_file_open_failed\n");
+        return 40;
+    }
+    std::string line;
+    if (!std::getline(in, line))
+    {
+        printf("tx_status_error: tx_file_read_failed\n");
+        return 41;
+    }
+    std::vector<uint8_t> tx_bytes;
+    if (!DecodeHexLine(line, &tx_bytes))
+    {
+        printf("tx_status_error: tx_hex_decode_failed\n");
+        return 42;
+    }
+    SpendTx needle;
+    size_t off = 0;
+    if (!ParseSpendTxCanonical(tx_bytes.empty() ? NULL : &tx_bytes[0], tx_bytes.size(), &off, &needle) || off != tx_bytes.size())
+    {
+        printf("tx_status_error: tx_parse_failed\n");
+        return 43;
+    }
+    Bytes32 needle_id;
+    if (!ComputeSpendTxId(needle, &needle_id))
+    {
+        printf("tx_status_error: txid_failed\n");
+        return 44;
+    }
+    const std::string cache_file = std::string(node_data_dir) + "/commit_payload_cache.bin";
+    std::vector< std::vector<uint8_t> > payloads;
+    if (!LoadCommitPayloadCache(cache_file, &payloads))
+    {
+        printf("tx_status_error: cache_load_failed path=%s\n", cache_file.c_str());
+        return 45;
+    }
+    for (std::vector< std::vector<uint8_t> >::reverse_iterator it = payloads.rbegin(); it != payloads.rend(); ++it)
+    {
+        RoundBatch b;
+        QuorumCertificate qc;
+        if (!ParseCommitPayload(*it, &b, &qc))
+            continue;
+        for (size_t i = 0; i < b.spends.size(); ++i)
+        {
+            Bytes32 sid;
+            if (!ComputeSpendTxId(b.spends[i], &sid))
+                continue;
+            if (memcmp(sid.v, needle_id.v, 32) == 0)
+            {
+                printf("tx_status=committed round=%llu txid=%s\n",
+                       (unsigned long long)b.round,
+                       Hex(needle_id.v, 32).c_str());
+                return 0;
+            }
+        }
+    }
+    printf("tx_status=not_committed txid=%s cache_entries=%zu\n",
+           Hex(needle_id.v, 32).c_str(),
+           payloads.size());
+    return 0;
+}
+
+static int SendCmd(int argc, char** argv)
+{
+    std::string to;
+    std::string amount_s;
+    std::string fee_s = "0.001";
+    std::string data_dir = "./data_seed";
+    std::string node_ep = "127.0.0.1:29101";
+    std::string magic_s = "52504f57";
+
+    for (int i = 2; i < argc; ++i)
+    {
+        std::string a = argv[i];
+        if (a == "--to" && i + 1 < argc)
+            to = argv[++i];
+        else if (a == "--amount" && i + 1 < argc)
+            amount_s = argv[++i];
+        else if (a == "--fee" && i + 1 < argc)
+            fee_s = argv[++i];
+        else if (a == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (a == "--node" && i + 1 < argc)
+            node_ep = argv[++i];
+        else if (a == "--magic" && i + 1 < argc)
+            magic_s = argv[++i];
+        else
+        {
+            printf("send_error: bad_arg %s\n", a.c_str());
+            return 50;
+        }
+    }
+    if (to.empty() || amount_s.empty())
+    {
+        printf("send usage:\n");
+        printf("  send --to <address> --amount <decimal> [--fee <decimal>] [--data-dir <dir>] [--node <host:port>] [--magic <hex>]\n");
+        return 51;
+    }
+    uint64_t amount = 0, fee = 0;
+    if (!ParseAmountAtomic3(amount_s, &amount))
+    {
+        printf("send_error: bad_amount\n");
+        return 52;
+    }
+    if (!ParseAmountAtomic3(fee_s, &fee))
+    {
+        printf("send_error: bad_fee\n");
+        return 53;
+    }
+    if (amount == 0)
+    {
+        printf("send_error: zero_amount\n");
+        return 54;
+    }
+    const uint32_t magic = ParseMagic(magic_s.c_str());
+    const std::string registry = ResolveRegistryPath(data_dir.c_str(), NULL);
+    int rc = WalletSendCmd(to.c_str(), amount, fee, data_dir.c_str(), magic, registry.c_str());
+    if (rc != 0)
+        return rc;
+    std::string draft;
+    if (!FindLatestOutboxFile(data_dir, &draft))
+    {
+        printf("send_error: draft_not_found\n");
+        return 55;
+    }
+    return TxSubmitCmd(draft.c_str(), node_ep.c_str(), magic);
+}
 
 static bool LoadWalletUtxosFromRegistry(const std::string& registry_file,
                                         const Bytes32& wallet_pubkey,
@@ -762,14 +986,34 @@ int main(int argc, char** argv)
     }
     if (cmd == "tx")
     {
-        if (argc < 5 || std::string(argv[2]) != "submit")
+        if (argc >= 3 && std::string(argv[2]) == "submit")
         {
-            printf("tx usage:\n");
-            printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", argv[0]);
-            return 1;
+            if (argc < 5)
+            {
+                printf("tx usage:\n");
+                printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", argv[0]);
+                printf("  %s tx status <tx_hex_file> [node_data_dir]\n", argv[0]);
+                return 1;
+            }
+            uint32_t magic = ParseMagic(argc >= 6 ? argv[5] : NULL);
+            return TxSubmitCmd(argv[3], argv[4], magic);
         }
-        uint32_t magic = ParseMagic(argc >= 6 ? argv[5] : NULL);
-        return TxSubmitCmd(argv[3], argv[4], magic);
+        if (argc >= 3 && std::string(argv[2]) == "status")
+        {
+            if (argc < 4)
+            {
+                printf("tx usage:\n");
+                printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", argv[0]);
+                printf("  %s tx status <tx_hex_file> [node_data_dir]\n", argv[0]);
+                return 1;
+            }
+            const char* node_data_dir = (argc >= 5) ? argv[4] : "./data_seed";
+            return TxStatusCmd(argv[3], node_data_dir);
+        }
+        printf("tx usage:\n");
+        printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", argv[0]);
+        printf("  %s tx status <tx_hex_file> [node_data_dir]\n", argv[0]);
+        return 1;
     }
     if (cmd == "getbalance")
     {
@@ -784,6 +1028,10 @@ int main(int argc, char** argv)
         const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
         const char* registry_file = (argc >= 5) ? argv[4] : NULL;
         return GetUtxoCmd(dir, ParseMagic(magic_arg), registry_file);
+    }
+    if (cmd == "send")
+    {
+        return SendCmd(argc, argv);
     }
 
     Usage(argv[0]);
