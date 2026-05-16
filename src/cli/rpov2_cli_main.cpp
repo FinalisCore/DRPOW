@@ -102,6 +102,27 @@ static bool SaveHexFile(const std::string& path, const std::vector<uint8_t>& byt
     return out.good();
 }
 
+static bool FileExists(const std::string& path)
+{
+    std::ifstream in(path.c_str(), std::ios::binary);
+    return in.good();
+}
+
+static std::string ResolveRegistryPath(const char* data_dir, const char* registry_file_opt)
+{
+    if (registry_file_opt && registry_file_opt[0] != '\0')
+        return std::string(registry_file_opt);
+    const std::string dir = data_dir ? std::string(data_dir) : std::string(".");
+    const std::string bin = dir + "/registry.bin";
+    if (FileExists(bin))
+        return bin;
+    const std::string hex = dir + "/registry.hex";
+    if (FileExists(hex))
+        return hex;
+    // prefer current canonical filename even if absent (for clearer error)
+    return bin;
+}
+
 static bool ParseHostPort(const std::string& s, std::string* host, uint16_t* port)
 {
     if (!host || !port)
@@ -391,9 +412,7 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
         return 3;
     }
 
-    std::string registry_file = registry_file_opt ? registry_file_opt : "";
-    if (registry_file.empty())
-        registry_file = std::string(dir) + "/registry.hex";
+    std::string registry_file = ResolveRegistryPath(dir, registry_file_opt);
 
     std::vector<LocalUtxo> utxos;
     uint64_t balance = 0;
@@ -438,9 +457,7 @@ static int GetBalanceCmd(const char* dir, uint32_t magic, const char* registry_f
         printf("wallet_error: %s\n", err.c_str());
         return 3;
     }
-    std::string registry_file = registry_file_opt ? registry_file_opt : "";
-    if (registry_file.empty())
-        registry_file = std::string(dir) + "/registry.hex";
+    std::string registry_file = ResolveRegistryPath(dir, registry_file_opt);
     std::vector<LocalUtxo> utxos;
     uint64_t balance = 0;
     if (!LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance))
@@ -467,9 +484,7 @@ static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file
         printf("wallet_error: %s\n", err.c_str());
         return 3;
     }
-    std::string registry_file = registry_file_opt ? registry_file_opt : "";
-    if (registry_file.empty())
-        registry_file = std::string(dir) + "/registry.hex";
+    std::string registry_file = ResolveRegistryPath(dir, registry_file_opt);
     std::vector<LocalUtxo> utxos;
     uint64_t balance = 0;
     if (!LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance))
@@ -516,9 +531,7 @@ static int WalletSendCmd(const char* to_address,
         return 4;
     }
 
-    std::string registry_file = registry_file_opt ? registry_file_opt : "";
-    if (registry_file.empty())
-        registry_file = std::string(dir) + "/registry.hex";
+    std::string registry_file = ResolveRegistryPath(dir, registry_file_opt);
 
     std::vector<LocalUtxo> utxos;
     uint64_t balance = 0;
