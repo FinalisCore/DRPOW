@@ -444,9 +444,13 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
     if (prev_epoch && !prev_epoch->validators.empty())
     {
         target_size = prev_epoch->validators.size();
-        if (target_size > max_validators)
-            target_size = max_validators;
+        // Deterministic growth: allow validator set to expand by +1 per epoch
+        // until max_validators is reached.
+        if (target_size < max_validators)
+            target_size += 1;
     }
+    if (target_size > max_validators)
+        target_size = max_validators;
     if (target_size == 0)
         target_size = 1;
 
@@ -2097,7 +2101,7 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 return;
             }
-            if (batch.mints.empty() || !IsValidatorForRound(batch.mints[0].miner_pubkey, batch.round))
+            if (batch.mints.empty())
             {
                 printf("drop propose unauthorized_proposer round=%llu\n",
                        (unsigned long long)batch.round);
@@ -2109,6 +2113,13 @@ int main(int argc, char** argv)
                        (int)engine.last_reject_code(),
                        engine.last_reject_message().c_str());
                 return;
+            }
+            if (!IsValidatorForRound(batch.mints[0].miner_pubkey, batch.round))
+            {
+                printf("pow_candidate_accepted miner=%s round=%llu batch=%s\n",
+                       Hex32(batch.mints[0].miner_pubkey).c_str(),
+                       (unsigned long long)batch.round,
+                       Hex32(batch.batch_hash).c_str());
             }
             const std::string batch_key = Bytes32Key(batch.batch_hash);
             if (!known_batches.count(batch_key))
@@ -2408,13 +2419,6 @@ int main(int argc, char** argv)
             {
                 printf("drop autopropose epoch_transition_invalid round=%llu\n",
                        (unsigned long long)target_round);
-                continue;
-            }
-            if (!IsValidatorForRound(signer_id, target_round))
-            {
-                printf("sync_only skip_autopropose round=%llu\n",
-                       (unsigned long long)target_round);
-                last_autopropose_tick = time(NULL);
                 continue;
             }
             bool have_pending = GetPendingRound(target_round, &batch);

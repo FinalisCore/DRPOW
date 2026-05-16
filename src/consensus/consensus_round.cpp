@@ -77,20 +77,13 @@ static bool IsMinerEligibleForRound(const RoundBatch& batch,
                                     const ValidatorSet* validator_set,
                                     const EconomicsPolicy& policy)
 {
-    if (batch.round > 0 && batch.round <= policy.genesis_bootstrap_rounds)
-        return !batch.mints.empty();
-    if (!validator_set || batch.mints.empty())
+    (void)validator_set;
+    (void)policy;
+    // Open PoW mining: miner does not need pre-existing validator membership.
+    // Authorization + target checks enforce real work validity.
+    if (batch.mints.empty())
         return false;
-    ValidatorEpoch epoch;
-    if (!validator_set->GetEpochForRound(batch.round, &epoch))
-        return false;
-    const Bytes32& miner = batch.mints[0].miner_pubkey;
-    for (size_t i = 0; i < epoch.validators.size(); ++i)
-    {
-        if (memcmp(epoch.validators[i].validator_id.v, miner.v, 32) == 0)
-            return true;
-    }
-    return false;
+    return true;
 }
 
 static bool ComputeExpectedTargetForRound(const StateStore* state_store,
@@ -207,6 +200,8 @@ bool ConsensusRoundEngine::Propose(const RoundBatch& batch)
         return Fail(REJECT_PROOF_BUDGET_EXCEEDED, "proof budget exceeded");
     if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
         return Fail(REJECT_POW_ELIGIBILITY_INVALID, "pow eligibility invalid");
+    if (!HasPowAuthorization(batch, proof_verifier_))
+        return Fail(REJECT_POW_AUTH_INVALID, "pow auth invalid");
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
         return Fail(REJECT_POW_TARGET_INVALID, "pow target derive failed");
@@ -236,6 +231,8 @@ bool ConsensusRoundEngine::ValidateAndVote(const RoundBatch& batch, Vote* out_vo
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
         return false;
     if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
+        return false;
+    if (!HasPowAuthorization(batch, proof_verifier_))
         return false;
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
