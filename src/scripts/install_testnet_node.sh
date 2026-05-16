@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 LIBOQS_SRC_DIR="${ROOT_DIR}/liboqs"
 LIBOQS_BUILD_DIR="${LIBOQS_SRC_DIR}/build"
 LIBOQS_INSTALL_DIR="${LIBOQS_SRC_DIR}/install"
