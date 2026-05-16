@@ -51,6 +51,11 @@ static bool EnsureDir(const std::string& d)
     return errno == EEXIST;
 }
 
+static bool EnsureOwnerOnlyFile(const std::string& path)
+{
+    return chmod(path.c_str(), S_IRUSR | S_IWUSR) == 0;
+}
+
 static std::string Bytes32Key(const Bytes32& b)
 {
     return std::string((const char*)b.v, 32);
@@ -505,7 +510,10 @@ int main(int argc, char** argv)
         std::ifstream kin(signer_key_file.c_str());
         std::string line;
         if (kin.good() && std::getline(kin, line))
+        {
             have_signer = HexTo32(line, signer_priv);
+            (void)EnsureOwnerOnlyFile(signer_key_file);
+        }
     }
     if (!have_signer)
     {
@@ -524,6 +532,11 @@ int main(int argc, char** argv)
         if (!kout.good())
         {
             printf("signer_key_persist_failed\n");
+            return 5;
+        }
+        if (!EnsureOwnerOnlyFile(signer_key_file))
+        {
+            printf("signer_key_permission_failed\n");
             return 5;
         }
         printf("signer_key_generated file=%s\n", signer_key_file.c_str());

@@ -17,6 +17,11 @@ static bool EnsureDir(const std::string& d)
     return errno == EEXIST;
 }
 
+static bool EnsureOwnerOnlyFile(const std::string& path)
+{
+    return chmod(path.c_str(), S_IRUSR | S_IWUSR) == 0;
+}
+
 static bool HexTo32(const std::string& s, uint8_t out[32])
 {
     if (s.size() != 64)
@@ -78,7 +83,10 @@ bool LoadOrCreateWalletIdentity(const std::string& data_dir,
     std::ifstream in(key_file.c_str());
     std::string line;
     if (in.good() && std::getline(in, line))
+    {
         have = HexTo32(line, priv);
+        (void)EnsureOwnerOnlyFile(key_file);
+    }
 
     if (!have)
     {
@@ -100,6 +108,12 @@ bool LoadOrCreateWalletIdentity(const std::string& data_dir,
         {
             if (err)
                 *err = "wallet_key_persist_failed";
+            return false;
+        }
+        if (!EnsureOwnerOnlyFile(key_file))
+        {
+            if (err)
+                *err = "wallet_key_permission_failed";
             return false;
         }
     }
