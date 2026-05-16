@@ -20,6 +20,25 @@ static void Usage(const char* bin)
     printf("  %s mempool demo\n", bin);
 }
 
+static void WalletUsage(const char* bin)
+{
+    printf("wallet usage:\n");
+    printf("  %s wallet init [data_dir] [network_magic_hex]\n", bin);
+    printf("  %s wallet show [data_dir] [network_magic_hex]\n", bin);
+}
+
+static void AddressUsage(const char* bin)
+{
+    printf("address usage:\n");
+    printf("  %s address validate <address> [network_magic_hex]\n", bin);
+}
+
+static void MempoolUsage(const char* bin)
+{
+    printf("mempool usage:\n");
+    printf("  %s mempool demo\n", bin);
+}
+
 static uint32_t ParseMagic(const char* s)
 {
     if (!s)
@@ -85,6 +104,7 @@ static int MempoolDemo()
 
 int main(int argc, char** argv)
 {
+    const char* kDefaultWalletDir = "./data_wallet";
     if (argc < 2)
     {
         Usage(argv[0]);
@@ -94,19 +114,50 @@ int main(int argc, char** argv)
     std::string cmd = argv[1];
     if (cmd == "wallet")
     {
-        if (argc < 4)
+        if (argc == 2)
         {
-            Usage(argv[0]);
+            WalletUsage(argv[0]);
+            return 0;
+        }
+        const char* subcmd = argv[2];
+        const char* dir = kDefaultWalletDir;
+        const char* magic_arg = NULL;
+        if (argc >= 4)
+            dir = argv[3];
+        if (argc >= 5)
+            magic_arg = argv[4];
+
+        if (argc == 4 && std::string(argv[3]).find('/') == std::string::npos &&
+            std::string(argv[3]).find('.') == std::string::npos &&
+            std::string(argv[3]).size() <= 10)
+        {
+            // If only one optional arg is provided and it looks like a short magic string,
+            // treat it as network magic and keep the default wallet directory.
+            dir = kDefaultWalletDir;
+            magic_arg = argv[3];
+        }
+
+        if (std::string(subcmd) != "init" && std::string(subcmd) != "show")
+        {
+            WalletUsage(argv[0]);
             return 1;
         }
-        uint32_t magic = ParseMagic(argc >= 5 ? argv[4] : NULL);
-        return WalletCmd(argv[2], argv[3], magic);
+        uint32_t magic = ParseMagic(magic_arg);
+        int rc = WalletCmd(subcmd, dir, magic);
+        if (rc == 1)
+            WalletUsage(argv[0]);
+        return rc;
     }
     if (cmd == "address")
     {
+        if (argc == 2)
+        {
+            AddressUsage(argv[0]);
+            return 0;
+        }
         if (argc < 4 || std::string(argv[2]) != "validate")
         {
-            Usage(argv[0]);
+            AddressUsage(argv[0]);
             return 1;
         }
         uint32_t magic = ParseMagic(argc >= 5 ? argv[4] : NULL);
@@ -114,9 +165,11 @@ int main(int argc, char** argv)
     }
     if (cmd == "mempool")
     {
+        if (argc == 2)
+            return MempoolDemo();
         if (argc >= 3 && std::string(argv[2]) == "demo")
             return MempoolDemo();
-        Usage(argv[0]);
+        MempoolUsage(argv[0]);
         return 1;
     }
 
