@@ -94,8 +94,12 @@ EconomicsPolicy DefaultEconomicsPolicy()
     p.max_fee_per_spend = 0;
     memset(p.min_target.v, 0x00, 32);
     p.min_target.v[31] = 0x01;
-    for (int i = 0; i < 32; ++i)
-        p.max_target.v[i] = 0xff;
+    // Default network PoW target:
+    // 000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    memset(p.max_target.v, 0xff, 32);
+    p.max_target.v[0] = 0x00;
+    p.max_target.v[1] = 0x00;
+    p.max_target.v[2] = 0x00;
     p.initial_subsidy = 50 * kAtomicPerCoin;
     p.subsidy_floor = 1;  // tail emission floor in atomic units
     // Era-0 duration is 2 years. Each next era doubles in duration (2y,4y,8y,...).
