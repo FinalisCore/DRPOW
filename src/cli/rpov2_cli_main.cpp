@@ -33,9 +33,32 @@ static std::string DefaultPathUnderHome(const char* suffix)
     return std::string(home) + "/.rpov" + suffix;
 }
 
+static std::string ExistingConfigPathUnderHome()
+{
+    const std::string a = DefaultPathUnderHome("/config/testnet.conf");
+    {
+        std::ifstream in(a.c_str());
+        if (in.good())
+            return a;
+    }
+    const std::string b = DefaultPathUnderHome("/config/mainnet.conf");
+    {
+        std::ifstream in(b.c_str());
+        if (in.good())
+            return b;
+    }
+    const std::string c = DefaultPathUnderHome("/config/global_testnet.conf");
+    {
+        std::ifstream in(c.c_str());
+        if (in.good())
+            return c;
+    }
+    return a;
+}
+
 static std::string DetectDefaultNodeDataDir()
 {
-    const std::string cfg = DefaultPathUnderHome("/config/global_testnet.conf");
+    const std::string cfg = ExistingConfigPathUnderHome();
     std::ifstream in(cfg.c_str());
     if (!in.good())
         return DefaultPathUnderHome("/nodes/seed");
@@ -267,7 +290,7 @@ static bool ReadHexKeyFile32(const std::string& key_file, uint8_t out_priv[32])
 
 static bool ReadSignerHexFromConfigForDataDir(const std::string& data_dir, uint8_t out_priv[32], std::string* out_label)
 {
-    const std::string cfg = DefaultPathUnderHome("/config/global_testnet.conf");
+    const std::string cfg = ExistingConfigPathUnderHome();
     std::ifstream in(cfg.c_str());
     if (!in.good())
         return false;
@@ -1147,7 +1170,7 @@ int main(int argc, char** argv)
 
         if (subcmd == "miner-info")
         {
-            const std::string miner_dir = DefaultPathUnderHome("/nodes/seed");
+            const std::string miner_dir = DetectDefaultNodeDataDir();
             const std::string miner_registry = miner_dir + "/registry.bin";
             const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
             const char* registry_file = (argc >= 5) ? argv[4] : miner_registry.c_str();
