@@ -68,9 +68,15 @@ static bool ValidateBatchStateless(const RoundBatch& batch)
 
 static bool HasPowAuthorization(const RoundBatch& batch, const ProofVerifier* proof_verifier)
 {
-    if (!proof_verifier || batch.mints.empty())
+    (void)proof_verifier;
+    if (batch.mints.empty())
         return false;
-    return proof_verifier->VerifyMintTx(batch.mints[0]);
+    // Pure PoW mode: any miner is authorized if its canonical batch hash
+    // meets the declared target. This removes signature-gated mint auth.
+    Bytes32 h;
+    if (!ComputeBatchHashCanonical(batch, &h))
+        return false;
+    return memcmp(h.v, batch.mints[0].target.v, 32) <= 0;
 }
 
 static bool IsMinerEligibleForRound(const RoundBatch& batch,
