@@ -102,6 +102,8 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
         }
         else if (k == "signer_privkey_hex")
             cfg.signer_privkey_hex = v;
+        else if (k == "genesis_hash_hex")
+            cfg.genesis_hash_hex = v;
         else if (k == "validator_pubkeys_hex")
         {
             cfg.validator_pubkeys_hex.clear();
@@ -132,6 +134,12 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     {
         if (err)
             *err = "signer_privkey_hex must be 64 hex chars if set";
+        return false;
+    }
+    if (cfg.genesis_hash_hex.size() != 64)
+    {
+        if (err)
+            *err = "genesis_hash_hex must be 64 hex chars";
         return false;
     }
     if (cfg.bind_port == 0)

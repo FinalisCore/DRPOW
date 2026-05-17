@@ -880,6 +880,40 @@ static uint64_t FileSizeBytes(const std::string& path)
     return (uint64_t)st.st_size;
 }
 
+static bool ReadFileBytes(const std::string& path, std::vector<uint8_t>* out)
+{
+    if (!out)
+        return false;
+    out->clear();
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in.good())
+        return false;
+    in.seekg(0, std::ios::end);
+    const std::streamoff n = in.tellg();
+    if (n < 0)
+        return false;
+    in.seekg(0, std::ios::beg);
+    out->resize((size_t)n);
+    if (n > 0)
+        in.read((char*)&(*out)[0], n);
+    return in.good();
+}
+
+static bool VerifyGenesisHashLocked(const std::string& data_dir, const std::string& expected_hex, std::string* out_actual_hex)
+{
+    const std::string genesis_file = data_dir + "/genesis_epoch0.bin";
+    std::vector<uint8_t> bytes;
+    if (!ReadFileBytes(genesis_file, &bytes))
+        return false;
+    Bytes32 h;
+    if (!Sha256(bytes, &h))
+        return false;
+    const std::string actual = Hex32(h);
+    if (out_actual_hex)
+        *out_actual_hex = actual;
+    return actual == expected_hex;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 2)
@@ -900,6 +934,18 @@ int main(int argc, char** argv)
         printf("config_error: invalid network_magic\n");
         return 2;
     }
+
+    std::string actual_genesis_hash;
+    if (!VerifyGenesisHashLocked(cfg.data_dir, cfg.genesis_hash_hex, &actual_genesis_hash))
+    {
+        printf("genesis_hash_mismatch data_dir=%s expected=%s actual=%s file=%s/genesis_epoch0.bin\n",
+               cfg.data_dir.c_str(),
+               cfg.genesis_hash_hex.c_str(),
+               actual_genesis_hash.empty() ? "<unavailable>" : actual_genesis_hash.c_str(),
+               cfg.data_dir.c_str());
+        return 2;
+    }
+    printf("genesis_hash_ok hash=%s\n", cfg.genesis_hash_hex.c_str());
 
     if (!EnsureDir(cfg.data_dir))
     {

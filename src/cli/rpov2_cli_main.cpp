@@ -33,6 +33,25 @@ static std::string DefaultPathUnderHome(const char* suffix)
     return std::string(home) + "/.rpov" + suffix;
 }
 
+static std::string DetectDefaultNodeDataDir()
+{
+    const std::string cfg = DefaultPathUnderHome("/config/global_testnet.conf");
+    std::ifstream in(cfg.c_str());
+    if (!in.good())
+        return DefaultPathUnderHome("/nodes/seed");
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (line.find("data_dir=") == 0)
+        {
+            const std::string v = line.substr(strlen("data_dir="));
+            if (!v.empty())
+                return v;
+        }
+    }
+    return DefaultPathUnderHome("/nodes/seed");
+}
+
 static void Usage(const char* bin)
 {
     printf("usage:\n");
@@ -1090,7 +1109,7 @@ static int MempoolDemo()
 
 int main(int argc, char** argv)
 {
-    const std::string default_seed_node_dir = DefaultPathUnderHome("/nodes/seed");
+    const std::string default_seed_node_dir = DetectDefaultNodeDataDir();
     const std::string default_wallet_dir = default_seed_node_dir;
     if (argc < 2)
     {
