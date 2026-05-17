@@ -30,6 +30,22 @@ LIBOQS_LIB_DIR="${LIBOQS_INSTALL_DIR}/lib"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 1; }; }
 
+check_bind_port_available() {
+  if command -v ss >/dev/null 2>&1; then
+    if ss -ltn "( sport = :${BIND_PORT} )" 2>/dev/null | tail -n +2 | grep -q .; then
+      echo "port_in_use_error: bind_port=${BIND_PORT}" >&2
+      echo "port_in_use_hint: ss -ltnp | grep :${BIND_PORT}" >&2
+      exit 1
+    fi
+  elif command -v lsof >/dev/null 2>&1; then
+    if lsof -iTCP:"${BIND_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
+      echo "port_in_use_error: bind_port=${BIND_PORT}" >&2
+      echo "port_in_use_hint: lsof -iTCP:${BIND_PORT} -sTCP:LISTEN" >&2
+      exit 1
+    fi
+  fi
+}
+
 install_liboqs_if_needed() {
   if PKG_CONFIG_PATH="${LIBOQS_PC_DIR}" pkg-config --exists liboqs 2>/dev/null; then
     echo "liboqs already installed in ${LIBOQS_INSTALL_DIR}"
@@ -118,10 +134,13 @@ main() {
   prepare_key
   prepare_genesis
   write_config
+  check_bind_port_available
   source "${ENV_FILE}"
   echo "starting ${NETWORK} node..."
   echo "genesis_file=${GENESIS_DST}"
   echo "genesis_hash_hex=${GENESIS_HASH_HEX}"
+  echo "config_file=${CONF_FILE}"
+  echo "key_file=${KEY_FILE}"
   echo "bind_port=${BIND_PORT}"
   [ -n "${SEED_PEER}" ] && echo "seed_peer=${SEED_PEER}" || echo "seed_peer=<none>"
   echo "data_dir=${DATA_DIR}"
