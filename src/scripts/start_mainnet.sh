@@ -103,8 +103,12 @@ autopropose_interval_sec=${AUTOPROPOSE_INTERVAL_SEC}
 signer_privkey_hex=${SIGNER_PRIVKEY_HEX}
 genesis_hash_hex=${GENESIS_HASH_HEX}
 CFG
-  [ -n "${SEED_PEER}" ] && echo "peers=${SEED_PEER}" >> "${CONF_FILE}"
-  [ -n "${PUBLIC_ENDPOINT}" ] && echo "public_endpoint=${PUBLIC_ENDPOINT}" >> "${CONF_FILE}"
+  if [ -n "${SEED_PEER}" ]; then
+    echo "peers=${SEED_PEER}" >> "${CONF_FILE}"
+  fi
+  if [ -n "${PUBLIC_ENDPOINT}" ]; then
+    echo "public_endpoint=${PUBLIC_ENDPOINT}" >> "${CONF_FILE}"
+  fi
 }
 
 main() {
