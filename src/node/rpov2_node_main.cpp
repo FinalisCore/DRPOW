@@ -1031,6 +1031,17 @@ int main(int argc, char** argv)
     std::map<std::string, std::vector<Vote> > known_votes;
     std::map<std::string, std::set<std::string> > known_vote_ids;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
+    const uint64_t startup_registry_bytes = FileSizeBytes(registry);
+    const uint64_t startup_commitlog_bytes = FileSizeBytes(commitlog);
+    if (last_committed_round == 0 && (startup_registry_bytes > 0 || startup_commitlog_bytes > 0))
+    {
+        printf("startup_state_inconsistent data_dir=%s last_round=0 registry_bytes=%llu commitlog_bytes=%llu\n",
+               cfg.data_dir.c_str(),
+               (unsigned long long)startup_registry_bytes,
+               (unsigned long long)startup_commitlog_bytes);
+        printf("startup_hint: clear node state dir or restore matching signer key before restart\n");
+        return 7;
+    }
     std::map<int, uint64_t> peer_last_round;
     std::map<int, uint64_t> peer_last_lower_round_log_local;
     time_t last_progress_time = time(NULL);
