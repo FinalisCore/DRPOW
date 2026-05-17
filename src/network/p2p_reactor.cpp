@@ -97,7 +97,12 @@ bool P2PReactor::Start(std::string* err)
     if (bind(listen_fd_, (sockaddr*)&addr, sizeof(addr)) != 0)
     {
         if (err)
-            *err = "bind failed";
+        {
+            char buf[128];
+            snprintf(buf, sizeof(buf), "bind failed port=%u errno=%d msg=%s",
+                     (unsigned)bind_port_, errno, strerror(errno));
+            *err = buf;
+        }
         CloseAll();
         return false;
     }
