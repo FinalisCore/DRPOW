@@ -904,6 +904,7 @@ static int GetBalanceCmd(const char* dir, uint32_t magic, const char* registry_f
     if (!LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance))
     {
         printf("getbalance_error: registry_unavailable path=%s\n", registry_file.c_str());
+        printf("getbalance_hint: node has not committed yet or wrong data_dir/config selected\n");
         return 4;
     }
     printf("%llu\n", (unsigned long long)balance);
@@ -932,6 +933,7 @@ static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file
     if (!LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance))
     {
         printf("getutxo_error: registry_unavailable path=%s\n", registry_file.c_str());
+        printf("getutxo_hint: node has not committed yet or wrong data_dir/config selected\n");
         return 4;
     }
     for (size_t i = 0; i < utxos.size(); ++i)

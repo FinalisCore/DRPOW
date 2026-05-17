@@ -2552,8 +2552,24 @@ int main(int argc, char** argv)
                        (unsigned long long)mint.output.value,
                        Hex32(mint.target).c_str(),
                        Hex32(mint.miner_pubkey).c_str());
-                if (!(BuildBatchHashLocal(batch, &batch.batch_hash) && engine.Propose(batch)))
+                if (!BuildBatchHashLocal(batch, &batch.batch_hash))
                 {
+                    printf("autopropose_reject round=%llu stage=batch_hash reason=build_batch_hash_failed\n",
+                           (unsigned long long)batch.round);
+                    for (size_t i = 0; i < drained_spends.size(); ++i)
+                    {
+                        std::string readd_err;
+                        (void)mempool.AddSpend(drained_spends[i], &readd_err);
+                    }
+                    last_autopropose_tick = time(NULL);
+                    continue;
+                }
+                if (!engine.Propose(batch))
+                {
+                    printf("autopropose_reject round=%llu stage=propose code=%d reason=%s\n",
+                           (unsigned long long)batch.round,
+                           (int)engine.last_reject_code(),
+                           engine.last_reject_message().c_str());
                     for (size_t i = 0; i < drained_spends.size(); ++i)
                     {
                         std::string readd_err;
@@ -2664,6 +2680,11 @@ int main(int argc, char** argv)
                                 printf("drop autopropose_vote send_failed\n");
                         }
                     }
+                }
+                else
+                {
+                    printf("autopropose_vote_skip round=%llu reason=validate_and_vote_failed\n",
+                           (unsigned long long)batch.round);
                 }
                 printf("autopropose round=%llu spends=%zu mints=%zu fees=%llu minted=%llu\n",
                        (unsigned long long)batch.round,

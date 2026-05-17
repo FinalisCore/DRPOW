@@ -133,6 +133,11 @@ main() {
   write_env
   prepare_key
   prepare_genesis
+  if [ -z "${SEED_PEER}" ] && [ "${BIND_PORT}" != "29101" ]; then
+    echo "config_error: SEED_PEER is required when BIND_PORT != 29101" >&2
+    echo "config_hint: BIND_PORT=29102 SEED_PEER=<seed_ip>:29101 ./scripts/start_testnet.sh" >&2
+    exit 1
+  fi
   write_config
   check_bind_port_available
   source "${ENV_FILE}"
