@@ -1109,11 +1109,24 @@ int main(int argc, char** argv)
 
         std::set<std::string> seen;
         std::vector< std::vector<uint8_t> > compacted;
-        const uint64_t low = last_committed_round + 1;
-        uint64_t high = synced_last_round;
         const uint64_t kWindow = 4096;
-        if (high > low + kWindow)
-            high = low + kWindow;
+        uint64_t low = 1;
+        uint64_t high = 0;
+        if (synced_last_round > last_committed_round)
+        {
+            // Catch-up mode: keep forward window only.
+            low = last_committed_round + 1;
+            high = synced_last_round;
+            if (high > low + kWindow)
+                high = low + kWindow;
+        }
+        else
+        {
+            // Normal mode: retain recent committed payloads for serving peers.
+            high = last_committed_round;
+            if (high > kWindow)
+                low = high - kWindow + 1;
+        }
 
         for (size_t i = 0; i < entries.size(); ++i)
         {
