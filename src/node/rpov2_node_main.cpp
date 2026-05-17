@@ -2112,6 +2112,24 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 return;
             }
+            if (last_committed_round == 0 &&
+                !cfg.peers.empty() &&
+                batch.round <= economics_policy.genesis_bootstrap_rounds &&
+                !batch.mints.empty() &&
+                !IsValidatorForRound(batch.mints[0].miner_pubkey, batch.round))
+            {
+                std::vector<Validator> bootstrap_vals(1);
+                bootstrap_vals[0].validator_id = batch.mints[0].miner_pubkey;
+                bootstrap_vals[0].voting_power = 1;
+                PowLotteryValidatorSet bootstrap_set(kRuntimeEpochLength);
+                if (bootstrap_set.InstallEpoch(0, bootstrap_vals))
+                {
+                    vset = bootstrap_set;
+                    printf("bootstrap_validator_set_adopted proposer=%s round=%llu\n",
+                           Hex32(batch.mints[0].miner_pubkey).c_str(),
+                           (unsigned long long)batch.round);
+                }
+            }
             if (batch.mints.empty())
             {
                 printf("drop propose unauthorized_proposer round=%llu\n",
