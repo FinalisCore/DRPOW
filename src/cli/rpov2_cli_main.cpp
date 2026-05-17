@@ -133,6 +133,14 @@ static std::string ResolveRegistryPath(const char* data_dir, const char* registr
     const std::string hex = dir + "/registry.hex";
     if (FileExists(hex))
         return hex;
+    // Operator-friendly fallback: if wallet-local registry is missing,
+    // read the canonical node registry under ~/.rpov/nodes/seed.
+    const std::string node_seed_bin = DefaultPathUnderHome("/nodes/seed/registry.bin");
+    if (FileExists(node_seed_bin))
+        return node_seed_bin;
+    const std::string node_seed_hex = DefaultPathUnderHome("/nodes/seed/registry.hex");
+    if (FileExists(node_seed_hex))
+        return node_seed_hex;
     // prefer current canonical filename even if absent (for clearer error)
     return bin;
 }
