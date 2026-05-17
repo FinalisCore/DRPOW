@@ -2335,7 +2335,8 @@ int main(int argc, char** argv)
                        engine.last_reject_message().c_str());
                 return;
             }
-            (void)AppendCommitPayloadCacheDedup(commit_payload_cache, env.payload);
+            if (!AppendCommitPayloadCacheDedup(commit_payload_cache, env.payload))
+                printf("cache_append_failed source=wire_commit round=%llu\n", (unsigned long long)batch.round);
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
@@ -2568,6 +2569,17 @@ int main(int argc, char** argv)
                         {
                             if (engine.Commit(batch, local_qc))
                             {
+                                std::vector<uint8_t> local_commit_payload;
+                                if (!SerializeCommitPayload(batch, local_qc, &local_commit_payload))
+                                {
+                                    printf("cache_serialize_failed source=local_commit round=%llu\n",
+                                           (unsigned long long)batch.round);
+                                }
+                                else if (!AppendCommitPayloadCacheDedup(commit_payload_cache, local_commit_payload))
+                                {
+                                    printf("cache_append_failed source=local_commit round=%llu\n",
+                                           (unsigned long long)batch.round);
+                                }
                                 last_committed_round = batch.round;
                                 last_progress_round = last_committed_round;
                                 last_progress_time = time(NULL);
