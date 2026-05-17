@@ -109,7 +109,7 @@ Run:
 
 Wallet quick check:
   source "${RPOV_ENV_FILE}"
-  "${CLI_BIN}" wallet init "${RPOV_HOME}/wallet" "${NETWORK_MAGIC_HEX#0x}"
+  "${CLI_BIN}" wallet miner-info "${NETWORK_MAGIC_HEX#0x}" "${DATA_DIR}/registry.bin"
 MSG
 }
 

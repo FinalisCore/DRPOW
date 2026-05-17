@@ -39,6 +39,7 @@ static void Usage(const char* bin)
     printf("  %s wallet init [data_dir] [network_magic_hex]\n", bin);
     printf("  %s wallet show [data_dir] [network_magic_hex]\n", bin);
     printf("  %s wallet info [data_dir] [network_magic_hex] [registry_file]\n", bin);
+    printf("  %s wallet miner-info [network_magic_hex] [registry_file]\n", bin);
     printf("  %s wallet send <to_address> <amount> <fee> [data_dir] [network_magic_hex] [registry_file]\n", bin);
     printf("  %s address validate <address> [network_magic_hex]\n", bin);
     printf("  %s mempool demo\n", bin);
@@ -55,6 +56,7 @@ static void WalletUsage(const char* bin)
     printf("  %s wallet init [data_dir] [network_magic_hex]\n", bin);
     printf("  %s wallet show [data_dir] [network_magic_hex]\n", bin);
     printf("  %s wallet info [data_dir] [network_magic_hex] [registry_file]\n", bin);
+    printf("  %s wallet miner-info [network_magic_hex] [registry_file]\n", bin);
     printf("  %s wallet send <to_address> <amount> <fee> [data_dir] [network_magic_hex] [registry_file]\n", bin);
 }
 
@@ -231,6 +233,111 @@ static bool FindLatestOutboxFile(const std::string& data_dir, std::string* out_p
     globfree(&g);
     *out_path = best;
     return true;
+}
+
+static bool ReadHexKeyFile32(const std::string& key_file, uint8_t out_priv[32])
+{
+    std::ifstream in(key_file.c_str());
+    if (!in.good())
+        return false;
+    std::string line;
+    if (!std::getline(in, line))
+        return false;
+    return HexTo32(line, out_priv);
+}
+
+static bool ReadSignerHexFromConfigForDataDir(const std::string& data_dir, uint8_t out_priv[32], std::string* out_label)
+{
+    const std::string cfg = DefaultPathUnderHome("/config/global_testnet.conf");
+    std::ifstream in(cfg.c_str());
+    if (!in.good())
+        return false;
+    std::string line;
+    std::string cfg_data_dir;
+    std::string signer_hex;
+    while (std::getline(in, line))
+    {
+        if (line.find("data_dir=") == 0)
+            cfg_data_dir = line.substr(strlen("data_dir="));
+        else if (line.find("signer_privkey_hex=") == 0)
+            signer_hex = line.substr(strlen("signer_privkey_hex="));
+    }
+    if (cfg_data_dir.empty() || signer_hex.empty())
+        return false;
+    if (cfg_data_dir != data_dir)
+        return false;
+    if (!HexTo32(signer_hex, out_priv))
+        return false;
+    if (out_label)
+        *out_label = cfg + ":signer_privkey_hex";
+    return true;
+}
+
+static std::string DetectNodeKeyFallbackPath(const std::string& data_dir)
+{
+    const std::string seed_suffix = "/nodes/seed";
+    if (data_dir.size() >= seed_suffix.size() &&
+        data_dir.compare(data_dir.size() - seed_suffix.size(), seed_suffix.size(), seed_suffix) == 0)
+    {
+        return DefaultPathUnderHome("/keys/seed_signer_privkey.hex");
+    }
+    const std::string joiner_tag = "/nodes/joiner_";
+    const size_t p = data_dir.rfind(joiner_tag);
+    if (p != std::string::npos)
+    {
+        const std::string port = data_dir.substr(p + joiner_tag.size());
+        if (!port.empty())
+            return DefaultPathUnderHome(("/keys/joiner_" + port + "_signer_privkey.hex").c_str());
+    }
+    return "";
+}
+
+static bool LoadWalletIdentityResolved(const char* dir,
+                                       uint32_t magic,
+                                       CryptoBackend* crypto,
+                                       bool create_if_missing,
+                                       WalletIdentity* out,
+                                       std::string* err,
+                                       std::string* out_key_file)
+{
+    if (!dir || !crypto || !out)
+        return false;
+
+    const std::string data_dir(dir);
+    const std::string fallback = DetectNodeKeyFallbackPath(data_dir);
+    uint8_t priv[32];
+    std::string key_label;
+    bool loaded = false;
+    if (!fallback.empty())
+    {
+        loaded = ReadHexKeyFile32(fallback, priv);
+        if (loaded)
+            key_label = fallback;
+    }
+    if (!loaded)
+        loaded = ReadSignerHexFromConfigForDataDir(data_dir, priv, &key_label);
+    if (loaded)
+    {
+        WalletIdentity id;
+        if (!crypto->PublicFromPrivateEd25519(priv, id.pubkey.v))
+            return false;
+        id.privkey_hex = Hex(priv, sizeof(priv));
+        id.address = AddressFromPubkey(id.pubkey, magic);
+        *out = id;
+        if (out_key_file)
+            *out_key_file = key_label;
+        if (err)
+            err->clear();
+        return true;
+    }
+
+    if (LoadOrCreateWalletIdentity(dir, magic, crypto, create_if_missing, out, err))
+    {
+        if (out_key_file)
+            *out_key_file = data_dir + "/signer_privkey.hex";
+        return true;
+    }
+    return false;
 }
 
 struct LocalUtxo {
@@ -670,7 +777,8 @@ static int WalletIdentityCmd(const char* subcmd, const char* dir, uint32_t magic
     WalletIdentity id;
     std::string err;
     const bool create_if_missing = (std::string(subcmd) == "init");
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), create_if_missing, &id, &err))
+    std::string key_file;
+    if (!LoadWalletIdentityResolved(dir, magic, crypto.get(), create_if_missing, &id, &err, &key_file))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -679,7 +787,7 @@ static int WalletIdentityCmd(const char* subcmd, const char* dir, uint32_t magic
     {
         printf("pubkey=%s\n", AddressFromPubkey(id.pubkey, 0).substr(6, 64).c_str());
         printf("address=%s\n", id.address.c_str());
-        printf("key_file=%s/signer_privkey.hex\n", dir);
+        printf("key_file=%s\n", key_file.c_str());
         return 0;
     }
     return 1;
@@ -695,7 +803,8 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), false, &id, &err))
+    std::string key_file;
+    if (!LoadWalletIdentityResolved(dir, magic, crypto.get(), false, &id, &err, &key_file))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -711,7 +820,7 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
 
     printf("pubkey=%s\n", AddressFromPubkey(id.pubkey, 0).substr(6, 64).c_str());
     printf("address=%s\n", id.address.c_str());
-    printf("key_file=%s/signer_privkey.hex\n", dir);
+    printf("key_file=%s\n", key_file.c_str());
     printf("registry_file=%s\n", registry_file.c_str());
     if (!have_registry)
         printf("wallet_registry_status=unavailable\n");
@@ -741,7 +850,8 @@ static int GetBalanceCmd(const char* dir, uint32_t magic, const char* registry_f
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), false, &id, &err))
+    std::string key_file;
+    if (!LoadWalletIdentityResolved(dir, magic, crypto.get(), false, &id, &err, &key_file))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -768,7 +878,8 @@ static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), false, &id, &err))
+    std::string key_file;
+    if (!LoadWalletIdentityResolved(dir, magic, crypto.get(), false, &id, &err, &key_file))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -808,7 +919,8 @@ static int WalletSendCmd(const char* to_address,
     }
     WalletIdentity id;
     std::string err;
-    if (!LoadOrCreateWalletIdentity(dir, magic, crypto.get(), true, &id, &err))
+    std::string key_file;
+    if (!LoadWalletIdentityResolved(dir, magic, crypto.get(), true, &id, &err, &key_file))
     {
         printf("wallet_error: %s\n", err.c_str());
         return 3;
@@ -978,8 +1090,8 @@ static int MempoolDemo()
 
 int main(int argc, char** argv)
 {
-    const std::string default_wallet_dir = DefaultPathUnderHome("/wallet");
     const std::string default_seed_node_dir = DefaultPathUnderHome("/nodes/seed");
+    const std::string default_wallet_dir = default_seed_node_dir;
     if (argc < 2)
     {
         Usage(argv[0]);
@@ -1012,6 +1124,15 @@ int main(int argc, char** argv)
             const char* magic_arg = (argc >= 5) ? argv[4] : NULL;
             const char* registry_file = (argc >= 6) ? argv[5] : NULL;
             return WalletInfoCmd(dir, ParseMagic(magic_arg), registry_file);
+        }
+
+        if (subcmd == "miner-info")
+        {
+            const std::string miner_dir = DefaultPathUnderHome("/nodes/seed");
+            const std::string miner_registry = miner_dir + "/registry.bin";
+            const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
+            const char* registry_file = (argc >= 5) ? argv[4] : miner_registry.c_str();
+            return WalletInfoCmd(miner_dir.c_str(), ParseMagic(magic_arg), registry_file);
         }
 
         if (subcmd == "send")
