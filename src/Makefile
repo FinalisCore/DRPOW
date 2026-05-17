@@ -2,13 +2,21 @@ CXX ?= g++
 CXXFLAGS ?= -std=c++11 -O2 -Wall -Wextra
 LDFLAGS ?=
 LDLIBS ?= -lcrypto
-USE_LIBOQS ?= 0
+USE_LIBOQS ?= auto
 CXXFLAGS += -I. -Iinclude -Iinclude/rpov2 -Iprotocol/tx -Icrypto -Iconsensus -Inetwork -Istorage -Iproof -Icli -Inode
 BUILD_DIR ?= build
 
+LOCAL_LIBOQS_PC_DIR := $(CURDIR)/liboqs/install/lib/pkgconfig
+PKG_CONFIG_PATH_EFFECTIVE := $(LOCAL_LIBOQS_PC_DIR):$(PKG_CONFIG_PATH)
+
+ifeq ($(USE_LIBOQS),auto)
+HAVE_LIBOQS := $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH_EFFECTIVE)" pkg-config --exists liboqs 2>/dev/null && echo 1 || echo 0)
+USE_LIBOQS := $(HAVE_LIBOQS)
+endif
+
 ifeq ($(USE_LIBOQS),1)
-LIBOQS_CFLAGS := $(shell pkg-config --cflags liboqs 2>/dev/null)
-LIBOQS_LIBS := $(shell pkg-config --libs liboqs 2>/dev/null)
+LIBOQS_CFLAGS := $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH_EFFECTIVE)" pkg-config --cflags liboqs 2>/dev/null)
+LIBOQS_LIBS := $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH_EFFECTIVE)" pkg-config --libs liboqs 2>/dev/null)
 ifeq ($(strip $(LIBOQS_CFLAGS)$(LIBOQS_LIBS)),)
 $(error USE_LIBOQS=1 but liboqs was not found by pkg-config. Set PKG_CONFIG_PATH (for example: /tmp/liboqs-install/lib/pkgconfig) or install liboqs development files)
 endif

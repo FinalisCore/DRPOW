@@ -51,6 +51,7 @@ Wallet commands:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
+source ~/.rpov/env_liboqs.sh
 build/rpov2_cli wallet init
 build/rpov2_cli wallet show
 build/rpov2_cli wallet info

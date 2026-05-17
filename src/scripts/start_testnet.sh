@@ -121,6 +121,7 @@ main() {
   echo "bind_port=${BIND_PORT}"
   [ -n "${SEED_PEER}" ] && echo "seed_peer=${SEED_PEER}" || echo "seed_peer=<none>"
   echo "data_dir=${DATA_DIR}"
+  echo "cli_env_hint=run 'source ${ENV_FILE}' in any shell before using build/rpov2_cli"
   exec "${ROOT_DIR}/build/rpov2_node" "${CONF_FILE}"
 }
 
