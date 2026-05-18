@@ -1,11 +1,11 @@
 #include "consensus_round.h"
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
 #include <set>
 #include <string>
 #include <string.h>
 
-namespace rpov2 {
+namespace drpow {
 
 static bool ComputeBatchHashCanonical(const RoundBatch& batch, Bytes32* out)
 {

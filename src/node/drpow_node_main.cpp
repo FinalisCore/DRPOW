@@ -19,16 +19,17 @@
 
 #include "consensus_round.h"
 #include "crypto_backend.h"
-#include "rpov2/mempool.h"
-#include "rpov2/node_config.h"
+#include "drpow/mempool.h"
+#include "drpow/node_config.h"
 #include "p2p_wire.h"
 #include "p2p_reactor.h"
 #include "proof_verifier.h"
 #include "pow_lottery_validator_set.h"
+#include "drpow_params.h"
 #include "registry_state_store.h"
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-using namespace rpov2;
+using namespace drpow;
 
 enum {
     LOG_QUIET = 0,
@@ -243,7 +244,7 @@ static bool BuildPeerListSignBytes(uint64_t advertised_round,
     if (!out)
         return false;
     out->clear();
-    const char* tag = "RPOV2:peer_list:v1";
+    const char* tag = "DRPOW:peer_list:v1";
     while (*tag)
         out->push_back((uint8_t)*tag++);
     WriteU64LE(out, advertised_round);
@@ -432,7 +433,7 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
 
     // Open competition mode: emphasize freshest work so active miners
     // can enter validator set quickly.
-    const uint64_t kAdmissionLookbackEpochs = 1;
+    const uint64_t kAdmissionLookbackEpochs = DrpowParams::kAdmissionLookbackEpochs;
     const uint64_t latest_epoch = epoch - 1;
     struct MinerStats {
         uint64_t wins;
@@ -508,7 +509,7 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
         // Open growth: expand faster (+4/epoch) until max_validators.
         if (target_size < max_validators)
         {
-            const size_t grow = 4;
+            const size_t grow = DrpowParams::kEpochValidatorGrowthPerEpoch;
             target_size = std::min(max_validators, target_size + grow);
         }
     }
@@ -523,8 +524,8 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
     size_t max_newcomers = target_size;
     if (max_newcomers > target_size)
         max_newcomers = target_size;
-    const uint64_t newcomer_min_wins_recent = 1;
-    const uint64_t incumbent_min_wins_total = 1;
+    const uint64_t newcomer_min_wins_recent = DrpowParams::kAdmissionPowRecentMinWins;
+    const uint64_t incumbent_min_wins_total = DrpowParams::kAdmissionIncumbentMinWins;
 
     size_t newcomers_added = 0;
     for (size_t i = 0; i < ranked.size() && out.size() < target_size; ++i)
@@ -562,7 +563,7 @@ static bool ComputeRecordHashV1Local(const RoundCommitRecord& record, Bytes32* o
     if (!out)
         return false;
     std::vector<uint8_t> m;
-    const char* tag = "RPOV2:commit_record:v1";
+    const char* tag = "DRPOW:commit_record:v1";
     while (*tag)
         m.push_back((uint8_t)*tag++);
     m.push_back((uint8_t)(record.record_version & 0xff));
@@ -1063,6 +1064,12 @@ int main(int argc, char** argv)
         }
         printf("signer_key_generated file=%s\n", signer_key_file.c_str());
     }
+    Bytes32 params_hash;
+    if (!ComputeDrpowParamsHash(&params_hash))
+    {
+        printf("params_hash_compute_failed\n");
+        return 5;
+    }
     Bytes32 signer_id;
     if (!crypto->PublicFromPrivateEd25519(signer_priv, signer_id.v))
     {
@@ -1118,8 +1125,8 @@ int main(int argc, char** argv)
         }
     }
     EconomicsPolicy economics_policy = DefaultEconomicsPolicy();
-    const uint64_t kRuntimeEpochLength = 10;
-    const size_t kEpochValidatorCap = 64;
+    const uint64_t kRuntimeEpochLength = DrpowParams::kEpochLengthRounds;
+    const size_t kEpochValidatorCap = DrpowParams::kEpochValidatorCap;
     PowLotteryValidatorSet vset(kRuntimeEpochLength);
     if (!vset.InstallEpoch(0, vals))
     {
@@ -1389,7 +1396,7 @@ int main(int argc, char** argv)
         // Deterministic "eligibility proof path":
         // A node is considered PoW-eligible if it has at least one successful
         // committed mint in the most recent admission window.
-        const uint64_t lookback = kRuntimeEpochLength;
+        const uint64_t lookback = DrpowParams::kPowRecentEligibilityLookbackRounds;
         const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
         const size_t count = (size_t)(round - from_round);
         if (count == 0)
@@ -1437,7 +1444,7 @@ int main(int argc, char** argv)
             out_ids->clear();
             if (round == 0)
                 return;
-            const uint64_t lookback = kRuntimeEpochLength;
+            const uint64_t lookback = DrpowParams::kPowRecentEligibilityLookbackRounds;
             const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
             const size_t count = (size_t)(round - from_round);
             if (count == 0)
@@ -1524,7 +1531,7 @@ int main(int argc, char** argv)
                 }
                 std::set<std::string> pow_recent_ids;
                 BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
-                if (!VerifyQuorumCertificateTyped(epoch, qc, batch.round, batch.batch_hash, pow_recent_ids, 1, vote_verifier))
+                if (!VerifyQuorumCertificateTyped(epoch, qc, batch.round, batch.batch_hash, pow_recent_ids, DrpowParams::kPowRecentVoteWeight, vote_verifier))
                 {
                     printf("catchup_break_qc_invalid round=%llu votes=%zu\n",
                            (unsigned long long)batch.round,
@@ -1687,7 +1694,7 @@ int main(int argc, char** argv)
         if (!out)
             return false;
         out->clear();
-        const char* tag = "RPOV2:hello_auth:v1";
+        const char* tag = "DRPOW:hello_auth:v1";
         while (*tag)
             out->push_back((uint8_t)*tag++);
         out->insert(out->end(), challenge.v, challenge.v + 32);
@@ -2072,6 +2079,11 @@ int main(int argc, char** argv)
             peer_node_id_by_fd[peer_fd] = node_id;
             peer_fd_by_node_id[std::string((const char*)node_id.v, 32)] = peer_fd;
             std::string ep = reactor.PeerEndpoint(peer_fd);
+            Logf(LOG_NORMAL, "[HANDSHAKE] ok peer_id=%s endpoint=%s params_version=%s params_hash=%s\n",
+                 Hex32(node_id).c_str(),
+                 ep.empty() ? "<unknown>" : ep.c_str(),
+                 DrpowParamsVersionTag(),
+                 Hex32(params_hash).c_str());
             if (IsValidEndpoint(ep))
             {
                 reactor.AddPeer(ep);
@@ -2567,7 +2579,7 @@ int main(int argc, char** argv)
                     return;
                 std::set<std::string> pow_recent_ids;
                 BuildPowEligibleIdSetForRound(itb->second.round, &pow_recent_ids);
-                if (!HasSupermajorityPowerTyped(epoch, qc, pow_recent_ids, 1))
+                if (!HasSupermajorityPowerTyped(epoch, qc, pow_recent_ids, DrpowParams::kPowRecentVoteWeight))
                     return;
             }
             if (!(IsValidatorForRound(signer_id, itb->second.round) || IsPowEligibleForRound(signer_id, itb->second.round)))
@@ -2628,7 +2640,7 @@ int main(int argc, char** argv)
                 }
                 std::set<std::string> pow_recent_ids;
                 BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
-                if (!VerifyQuorumCertificateTyped(epoch, qc, batch.round, batch.batch_hash, pow_recent_ids, 1, vote_verifier))
+                if (!VerifyQuorumCertificateTyped(epoch, qc, batch.round, batch.batch_hash, pow_recent_ids, DrpowParams::kPowRecentVoteWeight, vote_verifier))
                 {
                     printf("drop commit qc_invalid\n");
                     return;
@@ -2677,6 +2689,8 @@ int main(int argc, char** argv)
            cfg.data_dir.c_str(),
            cfg.peers.size(),
            cfg.duration_sec);
+    Logf(LOG_NORMAL, "[BOOT] params_version=%s\n", DrpowParamsVersionTag());
+    Logf(LOG_NORMAL, "[BOOT] params_hash=%s\n", Hex32(params_hash).c_str());
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] validator_set size=%zu\n", vals.size());
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
@@ -2956,7 +2970,7 @@ int main(int argc, char** argv)
                                 {
                                     std::set<std::string> pow_recent_ids;
                                     BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
-                                    local_supermajority = HasSupermajorityPowerTyped(epoch, local_qc, pow_recent_ids, 1);
+                                    local_supermajority = HasSupermajorityPowerTyped(epoch, local_qc, pow_recent_ids, DrpowParams::kPowRecentVoteWeight);
                                 }
                             }
                             if (local_supermajority && batch.round > last_committed_round)

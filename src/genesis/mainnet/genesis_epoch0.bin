@@ -1,4 +1,4 @@
-rpov2_genesis_v1
+drpow_genesis_v1
 network=mainnet
 network_magic=0x52504f56
 epoch=0

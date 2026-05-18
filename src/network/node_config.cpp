@@ -1,10 +1,10 @@
-#include "rpov2/node_config.h"
+#include "drpow/node_config.h"
 
 #include <stdlib.h>
 #include <fstream>
 #include <sstream>
 
-namespace rpov2 {
+namespace drpow {
 
 static std::string Trim(const std::string& s)
 {
@@ -51,7 +51,7 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
         return false;
 
     NodeConfig cfg;
-    cfg.data_dir = "/tmp/rpov2_node";
+    cfg.data_dir = "/tmp/drpow_node";
     cfg.bind_port = 29000;
     cfg.public_endpoint = "";
     cfg.duration_sec = 15;
@@ -182,4 +182,4 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     return true;
 }
 
-}  // namespace rpov2
+}  // namespace drpow

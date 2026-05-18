@@ -1,13 +1,13 @@
-#ifndef RPOV2_MEMPOOL_MEMPOOL_H
-#define RPOV2_MEMPOOL_MEMPOOL_H
+#ifndef DRPOW_MEMPOOL_MEMPOOL_H
+#define DRPOW_MEMPOOL_MEMPOOL_H
 
 #include <stddef.h>
 #include <string>
 #include <vector>
 
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 
-namespace rpov2 {
+namespace drpow {
 
 class Mempool {
 public:
@@ -27,6 +27,6 @@ private:
     std::vector<std::string> mint_ids_;
 };
 
-}  // namespace rpov2
+}  // namespace drpow
 
 #endif

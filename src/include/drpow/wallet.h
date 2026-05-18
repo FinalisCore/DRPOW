@@ -1,13 +1,13 @@
-#ifndef RPOV2_WALLET_WALLET_H
-#define RPOV2_WALLET_WALLET_H
+#ifndef DRPOW_WALLET_WALLET_H
+#define DRPOW_WALLET_WALLET_H
 
 #include <stdint.h>
 #include <string>
 
 #include "../crypto/crypto_backend.h"
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 
-namespace rpov2 {
+namespace drpow {
 
 struct WalletIdentity {
     Bytes32 pubkey;
@@ -22,6 +22,6 @@ bool LoadOrCreateWalletIdentity(const std::string& data_dir,
                                 WalletIdentity* out,
                                 std::string* err);
 
-}  // namespace rpov2
+}  // namespace drpow
 
 #endif

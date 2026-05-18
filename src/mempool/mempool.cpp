@@ -1,10 +1,10 @@
-#include "rpov2/mempool.h"
+#include "drpow/mempool.h"
 
 #include <algorithm>
 
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-namespace rpov2 {
+namespace drpow {
 
 static std::string IdKey(const Bytes32& id)
 {
@@ -87,4 +87,4 @@ size_t Mempool::MintCount() const
     return mints_.size();
 }
 
-}  // namespace rpov2
+}  // namespace drpow

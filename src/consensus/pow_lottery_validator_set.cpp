@@ -3,7 +3,7 @@
 #include <string>
 #include <string.h>
 
-namespace rpov2 {
+namespace drpow {
 
 static bool SameValidators(const std::vector<Validator>& a, const std::vector<Validator>& b)
 {

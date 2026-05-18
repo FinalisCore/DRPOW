@@ -5,7 +5,7 @@
 Use the same build profile on all operators:
 
 ```bash
-PKG_CONFIG_PATH=/home/greendragon/Desktop/coin/src/liboqs/install/lib/pkgconfig make USE_LIBOQS=1 rpov2_node
+PKG_CONFIG_PATH=/home/greendragon/Desktop/coin/src/liboqs/install/lib/pkgconfig make USE_LIBOQS=1 drpow_node
 ```
 
 ## 2. Network Identity Lock
@@ -65,5 +65,5 @@ Failure indicators:
 ## 8. Minimal Launch Command
 
 ```bash
-LD_LIBRARY_PATH=/home/greendragon/Desktop/coin/src/liboqs/install/lib ./rpov2_node /path/to/node.conf
+LD_LIBRARY_PATH=/home/greendragon/Desktop/coin/src/liboqs/install/lib ./drpow_node /path/to/node.conf
 ```

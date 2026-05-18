@@ -14,23 +14,23 @@
 #include <string>
 #include <vector>
 
-#include "rpov2/address.h"
+#include "drpow/address.h"
 #include "../crypto/crypto_backend.h"
 #include "p2p_wire.h"
-#include "rpov2/mempool.h"
-#include "rpov2/tx_codec.h"
-#include "rpov2/tx_types.h"
-#include "rpov2/wallet.h"
+#include "drpow/mempool.h"
+#include "drpow/tx_codec.h"
+#include "drpow/tx_types.h"
+#include "drpow/wallet.h"
 #include "economics_policy.h"
 
-using namespace rpov2;
+using namespace drpow;
 
 static std::string DefaultPathUnderHome(const char* suffix)
 {
     const char* home = getenv("HOME");
     if (!home || !home[0])
         return std::string(".") + suffix;
-    return std::string(home) + "/.rpov" + suffix;
+    return std::string(home) + "/.drpow" + suffix;
 }
 
 static std::string ExistingConfigPathUnderHome()
@@ -178,7 +178,7 @@ static std::string ResolveRegistryPath(const char* data_dir, const char* registr
     if (FileExists(hex))
         return hex;
     // Operator-friendly fallback: if wallet-local registry is missing,
-    // read the canonical node registry under ~/.rpov/nodes/seed.
+    // read the canonical node registry under ~/.drpow/nodes/seed.
     const std::string node_seed_bin = DefaultPathUnderHome("/nodes/seed/registry.bin");
     if (FileExists(node_seed_bin))
         return node_seed_bin;

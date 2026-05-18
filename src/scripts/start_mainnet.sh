@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RPOV_HOME="${RPOV_HOME:-${HOME}/.rpov}"
+DRPOW_HOME="${DRPOW_HOME:-${HOME}/.drpow}"
 NETWORK="mainnet"
 NETWORK_MAGIC_HEX="${NETWORK_MAGIC_HEX:-0x52504f56}"
 BIND_PORT="${BIND_PORT:-29101}"
@@ -12,14 +12,14 @@ AUTOPROPOSE="${AUTOPROPOSE:-}"
 AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-20}"
 DURATION_SEC="${DURATION_SEC:-0}"
 LOG_LEVEL="${LOG_LEVEL:-normal}"
-PEERS_FILE="${PEERS_FILE:-${RPOV_HOME}/peers.txt}"
+PEERS_FILE="${PEERS_FILE:-${DRPOW_HOME}/peers.txt}"
 
-CONFIG_DIR="${RPOV_HOME}/config"
-DATA_DIR="${DATA_DIR:-${RPOV_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
-KEY_DIR="${RPOV_HOME}/keys"
+CONFIG_DIR="${DRPOW_HOME}/config"
+DATA_DIR="${DATA_DIR:-${DRPOW_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
+KEY_DIR="${DRPOW_HOME}/keys"
 KEY_FILE="${KEY_FILE:-${KEY_DIR}/node_signer_privkey.hex}"
 CONF_FILE="${RPOV_NODE_CONFIG:-${CONFIG_DIR}/${NETWORK}.conf}"
-ENV_FILE="${RPOV_ENV_FILE:-${RPOV_HOME}/env_liboqs.sh}"
+ENV_FILE="${DRPOW_ENV_FILE:-${RPOV_ENV_FILE:-${DRPOW_HOME}/env_liboqs.sh}}"
 GENESIS_SRC="${ROOT_DIR}/genesis/${NETWORK}/genesis_epoch0.bin"
 GENESIS_DST="${DATA_DIR}/genesis_epoch0.bin"
 GENESIS_HASH_HEX=""
@@ -88,11 +88,11 @@ install_liboqs_if_needed() {
 
 build_binaries() {
   need_cmd make
-  PKG_CONFIG_PATH="${LIBOQS_PC_DIR}" make -C "${ROOT_DIR}" USE_LIBOQS=1 rpov2_node rpov2_cli
+  PKG_CONFIG_PATH="${LIBOQS_PC_DIR}" make -C "${ROOT_DIR}" USE_LIBOQS=1 drpow_node drpow_cli
 }
 
 write_env() {
-  mkdir -p "${RPOV_HOME}"
+  mkdir -p "${DRPOW_HOME}"
   cat > "${ENV_FILE}" <<ENV
 export PKG_CONFIG_PATH="${LIBOQS_PC_DIR}"
 export LD_LIBRARY_PATH="${LIBOQS_LIB_DIR}:\${LD_LIBRARY_PATH:-}"
@@ -178,8 +178,8 @@ main() {
   echo "peers_file=${PEERS_FILE}"
   [ -n "${BOOTSTRAP_PEERS}" ] && echo "bootstrap_peers=${BOOTSTRAP_PEERS}" || echo "bootstrap_peers=<none>"
   echo "data_dir=${DATA_DIR}"
-  echo "cli_env_hint=run 'source ${ENV_FILE}' in any shell before using build/rpov2_cli"
-  exec "${ROOT_DIR}/build/rpov2_node" "${CONF_FILE}"
+  echo "cli_env_hint=run 'source ${ENV_FILE}' in any shell before using build/drpow_cli"
+  exec "${ROOT_DIR}/build/drpow_node" "${CONF_FILE}"
 }
 
 main "$@"

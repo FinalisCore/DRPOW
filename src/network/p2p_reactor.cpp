@@ -15,7 +15,7 @@
 #include <string.h>
 #include <algorithm>
 
-namespace rpov2 {
+namespace drpow {
 
 namespace {
 
@@ -512,4 +512,4 @@ void P2PReactor::Stop()
     CloseAll();
 }
 
-}  // namespace rpov2
+}  // namespace drpow

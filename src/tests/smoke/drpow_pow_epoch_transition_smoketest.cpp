@@ -4,7 +4,7 @@
 
 #include "pow_lottery_validator_set.h"
 
-using namespace rpov2;
+using namespace drpow;
 
 static Bytes32 MakeId(uint8_t seed)
 {

@@ -4,8 +4,9 @@
 #include <string.h>
 
 #include "consensus_round.h"
+#include "drpow_params.h"
 
-namespace rpov2 {
+namespace drpow {
 
 namespace {
 
@@ -106,12 +107,12 @@ EconomicsPolicy DefaultEconomicsPolicy()
     p.min_transfer_tax_ppm = 20000;       // 2%
     p.target_window_rounds = 10;
     p.target_mints_per_window = 10;
-    p.target_epoch_rounds = 10;
-    p.target_adjust_up_ppm_limit = 2000000;
+    p.target_epoch_rounds = DrpowParams::kTargetEpochRounds;
+    p.target_adjust_up_ppm_limit = DrpowParams::kTargetAdjustUpPpmLimit;
     // Faster hardening when blocks are too frequent:
     // allow up to 4x harder target per retarget step.
-    p.target_adjust_down_ppm_limit = 250000;
-    p.genesis_bootstrap_rounds = 10;
+    p.target_adjust_down_ppm_limit = DrpowParams::kTargetAdjustDownPpmLimit;
+    p.genesis_bootstrap_rounds = DrpowParams::kGenesisBootstrapRounds;
     return p;
 }
 

@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace rpov2 {
+namespace drpow {
 
 struct NodeConfig {
     std::string data_dir;
@@ -25,6 +25,6 @@ struct NodeConfig {
 
 bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err);
 
-}  // namespace rpov2
+}  // namespace drpow
 
 #endif

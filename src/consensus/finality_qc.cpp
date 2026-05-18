@@ -4,9 +4,9 @@
 #include <string.h>
 #include <vector>
 
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-namespace rpov2 {
+namespace drpow {
 
 bool HasSupermajority(size_t total_validators, size_t votes_count)
 {

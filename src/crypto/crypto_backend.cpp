@@ -13,7 +13,7 @@
 #include <oqs/oqs.h>
 #endif
 
-namespace rpov2 {
+namespace drpow {
 
 namespace {
 
@@ -69,7 +69,7 @@ struct PqcStdKeyPair {
 static const char* kPqcStdSigAlg = OQS_SIG_alg_ml_dsa_65;
 static std::map<std::string, PqcStdKeyPair> g_pqc_std_keys;
 static bool g_pqc_std_keys_loaded = false;
-static const char* kPqcKeyDbPath = "/tmp/rpov2_pqc_keys.bin";
+static const char* kPqcKeyDbPath = "/tmp/drpow_pqc_keys.bin";
 
 static void WriteU32LEFile(std::ofstream* out, uint32_t v)
 {
@@ -106,7 +106,7 @@ static bool LoadPqcStdKeyDb()
 
     char magic[8];
     in.read(magic, 8);
-    if (!in.good() || memcmp(magic, "RPOV2KDB", 8) != 0)
+    if (!in.good() || memcmp(magic, "DRPOWKDB", 8) != 0)
         return true;
 
     while (true)
@@ -144,7 +144,7 @@ static bool AppendPqcStdKeyDb(const uint8_t seed32[32], const PqcStdKeyPair& kp)
     if (!out.good())
         return false;
     if (need_header)
-        out.write("RPOV2KDB", 8);
+        out.write("DRPOWKDB", 8);
     out.write((const char*)seed32, 32);
     WriteU32LEFile(&out, (uint32_t)kp.pub.size());
     WriteU32LEFile(&out, (uint32_t)kp.priv.size());
@@ -539,7 +539,7 @@ std::unique_ptr<CryptoBackend> CreateCryptoBackendByName(const std::string& name
 
 std::unique_ptr<CryptoBackend> CreateCryptoBackendFromEnv()
 {
-    const char* v = getenv("RPOV2_CRYPTO_BACKEND");
+    const char* v = getenv("DRPOW_CRYPTO_BACKEND");
     if (!v || !*v)
         return CreateCryptoBackendByName("pqc");
     return CreateCryptoBackendByName(v);

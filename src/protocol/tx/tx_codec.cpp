@@ -3,7 +3,7 @@
 #include <openssl/sha.h>
 #include <string.h>
 
-namespace rpov2 {
+namespace drpow {
 
 void WriteU64LE(std::vector<uint8_t>* out, uint64_t v)
 {

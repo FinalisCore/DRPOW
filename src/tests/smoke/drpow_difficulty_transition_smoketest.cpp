@@ -3,7 +3,7 @@
 
 #include "economics_policy.h"
 
-using namespace rpov2;
+using namespace drpow;
 
 static Bytes32 U8Target(uint8_t v)
 {

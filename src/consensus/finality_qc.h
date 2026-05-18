@@ -6,11 +6,11 @@
 #include <set>
 #include <vector>
 
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 #include "validator_set.h"
 #include "crypto_backend.h"
 
-namespace rpov2 {
+namespace drpow {
 
 enum VoteEligibilityType : uint8_t {
     VOTE_ELIGIBILITY_VALIDATOR_SET = 0,

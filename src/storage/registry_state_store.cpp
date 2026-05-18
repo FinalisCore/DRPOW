@@ -8,9 +8,9 @@
 #include <string.h>
 
 #include "state_commitment.h"
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-namespace rpov2 {
+namespace drpow {
 
 namespace {
 
@@ -39,7 +39,7 @@ static bool ComputeRecordHashV1(const RoundCommitRecord& record, Bytes32* out)
     if (!out)
         return false;
     std::vector<uint8_t> m;
-    const char* tag = "RPOV2:commit_record:v1";
+    const char* tag = "DRPOW:commit_record:v1";
     while (*tag)
         m.push_back((uint8_t)*tag++);
     m.push_back((uint8_t)(record.record_version & 0xff));

@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace rpov2 {
+namespace drpow {
 
 class CryptoBackend {
 public:
