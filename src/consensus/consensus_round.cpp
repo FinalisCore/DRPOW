@@ -280,6 +280,7 @@ bool ConsensusRoundEngine::ValidateAndVote(const RoundBatch& batch, Vote* out_vo
             return false;
     out_vote->round = batch.round;
     out_vote->batch_hash = batch.batch_hash;
+    out_vote->eligibility_type = VOTE_ELIGIBILITY_VALIDATOR_SET;
     return true;
 }
 

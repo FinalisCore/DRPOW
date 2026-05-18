@@ -239,10 +239,13 @@ bool SerializeVotePayload(const Vote& vote, std::vector<uint8_t>* out)
 {
     if (!out)
         return false;
+    if (!VoteEligibilityTypeValid(vote.eligibility_type))
+        return false;
     out->clear();
     WriteU64LE(out, vote.round);
     WriteBytes32(out, vote.batch_hash);
     WriteBytes32(out, vote.validator_id);
+    out->push_back(vote.eligibility_type);
     WriteU64LE(out, (uint64_t)vote.signature.size());
     out->insert(out->end(), vote.signature.begin(), vote.signature.end());
     return true;
@@ -260,6 +263,11 @@ bool ParseVotePayload(const std::vector<uint8_t>& in, Vote* out)
     if (!ReadBytesLocal(&in[0], in.size(), &off, v.batch_hash.v, 32))
         return false;
     if (!ReadBytesLocal(&in[0], in.size(), &off, v.validator_id.v, 32))
+        return false;
+    if (off + 1 > in.size())
+        return false;
+    v.eligibility_type = in[off++];
+    if (!VoteEligibilityTypeValid(v.eligibility_type))
         return false;
     if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))
         return false;
@@ -284,6 +292,7 @@ static bool SerializeQcLocal(const QuorumCertificate& qc, std::vector<uint8_t>* 
         WriteU64LE(out, v.round);
         WriteBytes32(out, v.batch_hash);
         WriteBytes32(out, v.validator_id);
+        out->push_back(v.eligibility_type);
         WriteU64LE(out, (uint64_t)v.signature.size());
         out->insert(out->end(), v.signature.begin(), v.signature.end());
     }
@@ -313,6 +322,11 @@ static bool ParseQcLocal(const uint8_t* data, size_t n, size_t* off, QuorumCerti
         if (!ReadBytesLocal(data, n, off, qc.votes[i].batch_hash.v, 32))
             return false;
         if (!ReadBytesLocal(data, n, off, qc.votes[i].validator_id.v, 32))
+            return false;
+        if (*off + 1 > n)
+            return false;
+        qc.votes[i].eligibility_type = data[(*off)++];
+        if (!VoteEligibilityTypeValid(qc.votes[i].eligibility_type))
             return false;
         if (!ReadVecLocal(data, n, off, &sig))
             return false;
