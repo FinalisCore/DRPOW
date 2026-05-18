@@ -1580,6 +1580,8 @@ int main(int argc, char** argv)
     std::map<std::string, int> peer_fd_by_node_id;
     std::map<int, Bytes32> peer_pending_node_id_by_fd;
     std::map<int, Bytes32> peer_challenge_by_fd;
+    std::map<std::string, uint64_t> duplicate_node_cooldown_until_ms;
+    std::map<std::string, uint64_t> duplicate_endpoint_cooldown_until_ms;
     struct PeerPenaltyPersist {
         double score;
         uint64_t last_ms;
@@ -1781,6 +1783,15 @@ int main(int argc, char** argv)
                 return;
             }
             const std::string node_key((const char*)remote_id.v, 32);
+            {
+                std::map<std::string, uint64_t>::const_iterator it_cd = duplicate_node_cooldown_until_ms.find(node_key);
+                if (it_cd != duplicate_node_cooldown_until_ms.end() && it_cd->second > now_ms())
+                {
+                    note_drop("hello_duplicate_cooldown");
+                    reactor.Disconnect(peer_fd);
+                    return;
+                }
+            }
             PeerPenaltyPersist& pnode = persist_penalty_by_node[node_key];
             decay_persist(&pnode);
             if (pnode.quarantine_until_ms > now_ms())
@@ -1792,6 +1803,13 @@ int main(int argc, char** argv)
             std::string ep = reactor.PeerEndpoint(peer_fd);
             if (!ep.empty())
             {
+                std::map<std::string, uint64_t>::const_iterator it_ep_cd = duplicate_endpoint_cooldown_until_ms.find(ep);
+                if (it_ep_cd != duplicate_endpoint_cooldown_until_ms.end() && it_ep_cd->second > now_ms())
+                {
+                    note_drop("hello_duplicate_cooldown");
+                    reactor.Disconnect(peer_fd);
+                    return;
+                }
                 PeerPenaltyPersist& pep = persist_penalty_by_endpoint[ep];
                 decay_persist(&pep);
                 if (pep.quarantine_until_ms > now_ms())
@@ -1815,6 +1833,11 @@ int main(int argc, char** argv)
                 note_drop("hello_peer_id_collision");
                 // Expected during simultaneous outbound/inbound dialing.
                 // Keep current canonical connection and close duplicate quietly.
+                const uint64_t hold_ms = now_ms() + 15000ULL;
+                duplicate_node_cooldown_until_ms[node_key] = hold_ms;
+                const std::string dup_ep = reactor.PeerEndpoint(peer_fd);
+                if (!dup_ep.empty())
+                    duplicate_endpoint_cooldown_until_ms[dup_ep] = hold_ms;
                 reactor.Disconnect(peer_fd);
                 return;
             }
