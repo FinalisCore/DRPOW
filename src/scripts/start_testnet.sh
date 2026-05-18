@@ -134,6 +134,10 @@ write_config() {
   if [ -z "${AUTOPROPOSE}" ]; then
     if [ -n "${SEED_PEER}" ]; then AUTOPROPOSE=0; else AUTOPROPOSE=1; fi
   fi
+  local JOINER_MODE=0
+  if [ -n "${SEED_PEER}" ]; then
+    JOINER_MODE=1
+  fi
   cat > "${CONF_FILE}" <<CFG
 bind_port=${BIND_PORT}
 data_dir=${DATA_DIR}
@@ -141,6 +145,7 @@ network_magic_hex=${NETWORK_MAGIC_HEX}
 duration_sec=${DURATION_SEC}
 autopropose=${AUTOPROPOSE}
 autopropose_interval_sec=${AUTOPROPOSE_INTERVAL_SEC}
+joiner_mode=${JOINER_MODE}
 signer_privkey_hex=${SIGNER_PRIVKEY_HEX}
 genesis_hash_hex=${GENESIS_HASH_HEX}
 log_level=${LOG_LEVEL}

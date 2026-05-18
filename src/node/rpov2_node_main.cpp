@@ -1383,6 +1383,83 @@ int main(int argc, char** argv)
         }
         return false;
     };
+    std::function<bool(const Bytes32&, uint64_t)> IsPowEligibleForRound = [&](const Bytes32& validator_id, uint64_t round) {
+        if (round == 0)
+            return false;
+        // Deterministic "eligibility proof path":
+        // A node is considered PoW-eligible if it has at least one successful
+        // committed mint in the most recent admission window.
+        const uint64_t lookback = kRuntimeEpochLength;
+        const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
+        const size_t count = (size_t)(round - from_round);
+        if (count == 0)
+            return false;
+        std::vector<RoundCommitRecord> recs;
+        if (!store.ExportVerifiedCommitRecordsFromRound(from_round, count, &recs))
+            return false;
+        for (size_t i = 0; i < recs.size(); ++i)
+        {
+            MintTx mint;
+            size_t off = 0;
+            if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                      recs[i].consensus_proof.size(),
+                                      &off,
+                                      &mint) ||
+                off != recs[i].consensus_proof.size())
+            {
+                continue;
+            }
+            if (memcmp(mint.miner_pubkey.v, validator_id.v, 32) == 0)
+                return true;
+        }
+        return false;
+    };
+    std::function<bool(const Bytes32&, uint64_t, uint8_t*)> ResolveVoteEligibilityForRound =
+        [&](const Bytes32& validator_id, uint64_t round, uint8_t* out_type) {
+            if (!out_type)
+                return false;
+            if (IsValidatorForRound(validator_id, round))
+            {
+                *out_type = VOTE_ELIGIBILITY_VALIDATOR_SET;
+                return true;
+            }
+            if (IsPowEligibleForRound(validator_id, round))
+            {
+                *out_type = VOTE_ELIGIBILITY_POW_RECENT;
+                return true;
+            }
+            return false;
+        };
+    std::function<void(uint64_t, std::set<std::string>*)> BuildPowEligibleIdSetForRound =
+        [&](uint64_t round, std::set<std::string>* out_ids) {
+            if (!out_ids)
+                return;
+            out_ids->clear();
+            if (round == 0)
+                return;
+            const uint64_t lookback = kRuntimeEpochLength;
+            const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
+            const size_t count = (size_t)(round - from_round);
+            if (count == 0)
+                return;
+            std::vector<RoundCommitRecord> recs;
+            if (!store.ExportVerifiedCommitRecordsFromRound(from_round, count, &recs))
+                return;
+            for (size_t i = 0; i < recs.size(); ++i)
+            {
+                MintTx mint;
+                size_t off = 0;
+                if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                          recs[i].consensus_proof.size(),
+                                          &off,
+                                          &mint) ||
+                    off != recs[i].consensus_proof.size())
+                {
+                    continue;
+                }
+                out_ids->insert(std::string((const char*)mint.miner_pubkey.v, 32));
+            }
+        };
 
     std::function<void()> TryCatchUpFromCache = [&]() {
         if (last_committed_round >= synced_last_round)
@@ -1445,7 +1522,9 @@ int main(int argc, char** argv)
                     printf("catchup_break_epoch_missing round=%llu\n", (unsigned long long)batch.round);
                     break;
                 }
-                if (!VerifyQuorumCertificate(epoch, qc, batch.round, batch.batch_hash, vote_verifier))
+                std::set<std::string> pow_recent_ids;
+                BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
+                if (!VerifyQuorumCertificateTyped(epoch, qc, batch.round, batch.batch_hash, pow_recent_ids, 1, vote_verifier))
                 {
                     printf("catchup_break_qc_invalid round=%llu votes=%zu\n",
                            (unsigned long long)batch.round,
@@ -1683,6 +1762,9 @@ int main(int argc, char** argv)
         }
     };
     std::map<std::string, uint64_t> drop_counters;
+    uint64_t metric_handshake_kept_leg = 0;
+    uint64_t metric_handshake_dropped_leg = 0;
+    uint64_t metric_handshake_cooldown_hits = 0;
     uint64_t drop_summary_last_ms = now_ms();
     auto note_drop = [&](const char* reason) {
         if (!reason)
@@ -1699,6 +1781,16 @@ int main(int argc, char** argv)
             return;
         }
         std::string msg = "[NET] drop_summary";
+        {
+            char mbuf[192];
+            snprintf(mbuf,
+                     sizeof(mbuf),
+                     " kept_leg=%llu dropped_leg=%llu cooldown_hits=%llu",
+                     (unsigned long long)metric_handshake_kept_leg,
+                     (unsigned long long)metric_handshake_dropped_leg,
+                     (unsigned long long)metric_handshake_cooldown_hits);
+            msg += mbuf;
+        }
         for (std::map<std::string, uint64_t>::const_iterator it = drop_counters.begin();
              it != drop_counters.end(); ++it)
         {
@@ -1788,6 +1880,7 @@ int main(int argc, char** argv)
                 if (it_cd != duplicate_node_cooldown_until_ms.end() && it_cd->second > now_ms())
                 {
                     note_drop("hello_duplicate_cooldown");
+                    metric_handshake_cooldown_hits += 1;
                     reactor.Disconnect(peer_fd);
                     return;
                 }
@@ -1807,6 +1900,7 @@ int main(int argc, char** argv)
                 if (it_ep_cd != duplicate_endpoint_cooldown_until_ms.end() && it_ep_cd->second > now_ms())
                 {
                     note_drop("hello_duplicate_cooldown");
+                    metric_handshake_cooldown_hits += 1;
                     reactor.Disconnect(peer_fd);
                     return;
                 }
@@ -1831,15 +1925,50 @@ int main(int argc, char** argv)
             if (it_existing != peer_fd_by_node_id.end() && it_existing->second != peer_fd)
             {
                 note_drop("hello_peer_id_collision");
-                // Expected during simultaneous outbound/inbound dialing.
-                // Keep current canonical connection and close duplicate quietly.
-                const uint64_t hold_ms = now_ms() + 15000ULL;
+                const int existing_fd = it_existing->second;
+                const std::string existing_ep = reactor.PeerEndpoint(existing_fd);
+                const std::string incoming_ep = reactor.PeerEndpoint(peer_fd);
+
+                // Deterministic tie-break for dual legs to the same peer-id:
+                // prefer lexicographically smaller endpoint; tie-break on lower fd.
+                // This avoids ambiguous keep/drop behavior across reconnect churn.
+                bool keep_incoming = false;
+                if (!incoming_ep.empty() && !existing_ep.empty())
+                {
+                    if (incoming_ep < existing_ep)
+                        keep_incoming = true;
+                    else if (incoming_ep == existing_ep && peer_fd < existing_fd)
+                        keep_incoming = true;
+                }
+                else if (!incoming_ep.empty() && existing_ep.empty())
+                {
+                    keep_incoming = true;
+                }
+                else if (incoming_ep.empty() && existing_ep.empty() && peer_fd < existing_fd)
+                {
+                    keep_incoming = true;
+                }
+
+                const uint64_t hold_ms = now_ms() + 30000ULL;
                 duplicate_node_cooldown_until_ms[node_key] = hold_ms;
-                const std::string dup_ep = reactor.PeerEndpoint(peer_fd);
-                if (!dup_ep.empty())
-                    duplicate_endpoint_cooldown_until_ms[dup_ep] = hold_ms;
-                reactor.Disconnect(peer_fd);
-                return;
+                if (!incoming_ep.empty())
+                    duplicate_endpoint_cooldown_until_ms[incoming_ep] = hold_ms;
+                if (!existing_ep.empty())
+                    duplicate_endpoint_cooldown_until_ms[existing_ep] = hold_ms;
+
+                if (keep_incoming)
+                {
+                    metric_handshake_kept_leg += 1;
+                    metric_handshake_dropped_leg += 1;
+                    peer_fd_by_node_id.erase(node_key);
+                    reactor.Disconnect(existing_fd);
+                }
+                else
+                {
+                    metric_handshake_dropped_leg += 1;
+                    reactor.Disconnect(peer_fd);
+                    return;
+                }
             }
             peer_pending_node_id_by_fd[peer_fd] = remote_id;
             Bytes32 challenge;
@@ -2333,17 +2462,20 @@ int main(int argc, char** argv)
                 printf("drop propose vote_build_failed\n");
                 return;
             }
-            if (!IsValidatorForRound(signer_id, batch.round))
+            uint8_t local_vote_type = 0;
+            if (!ResolveVoteEligibilityForRound(signer_id, batch.round, &local_vote_type))
             {
                 printf("sync_only skip_vote round=%llu\n",
                        (unsigned long long)batch.round);
                 return;
             }
             vote.validator_id = signer_id;
+            vote.eligibility_type = local_vote_type;
             std::vector<uint8_t> m;
             WriteU64LE(&m, vote.round);
             m.insert(m.end(), vote.batch_hash.v, vote.batch_hash.v + 32);
             m.insert(m.end(), vote.validator_id.v, vote.validator_id.v + 32);
+            m.push_back(vote.eligibility_type);
             if (!crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))
             {
                 printf("drop propose vote_sign_failed\n");
@@ -2385,10 +2517,19 @@ int main(int argc, char** argv)
                        (unsigned long long)vote.round);
                 return;
             }
-            if (!IsValidatorForRound(vote.validator_id, vote.round))
+            uint8_t expected_vote_type = 0;
+            if (!ResolveVoteEligibilityForRound(vote.validator_id, vote.round, &expected_vote_type))
             {
                 printf("drop vote unauthorized_voter round=%llu\n",
                        (unsigned long long)vote.round);
+                return;
+            }
+            if (vote.eligibility_type != expected_vote_type)
+            {
+                printf("drop vote eligibility_mismatch round=%llu got=%u expected=%u\n",
+                       (unsigned long long)vote.round,
+                       (unsigned)vote.eligibility_type,
+                       (unsigned)expected_vote_type);
                 return;
             }
             if (!vote_verifier.VerifyVote(vote))
@@ -2424,10 +2565,12 @@ int main(int argc, char** argv)
                 ValidatorEpoch epoch;
                 if (!vset.GetEpochForRound(itb->second.round, &epoch))
                     return;
-                if (!HasSupermajorityPower(epoch, qc))
+                std::set<std::string> pow_recent_ids;
+                BuildPowEligibleIdSetForRound(itb->second.round, &pow_recent_ids);
+                if (!HasSupermajorityPowerTyped(epoch, qc, pow_recent_ids, 1))
                     return;
             }
-            if (!IsValidatorForRound(signer_id, itb->second.round))
+            if (!(IsValidatorForRound(signer_id, itb->second.round) || IsPowEligibleForRound(signer_id, itb->second.round)))
             {
                 printf("sync_only skip_commit_broadcast round=%llu\n",
                        (unsigned long long)itb->second.round);
@@ -2483,7 +2626,9 @@ int main(int argc, char** argv)
                     printf("drop commit epoch_missing\n");
                     return;
                 }
-                if (!VerifyQuorumCertificate(epoch, qc, batch.round, batch.batch_hash, vote_verifier))
+                std::set<std::string> pow_recent_ids;
+                BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
+                if (!VerifyQuorumCertificateTyped(epoch, qc, batch.round, batch.batch_hash, pow_recent_ids, 1, vote_verifier))
                 {
                     printf("drop commit qc_invalid\n");
                     return;
@@ -2535,6 +2680,7 @@ int main(int argc, char** argv)
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] validator_set size=%zu\n", vals.size());
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
+    Logf(LOG_NORMAL, "[BOOT] joiner_mode=%d\n", cfg.joiner_mode);
     Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
     Logf(LOG_NORMAL, "[BOOT] commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
     Logf(LOG_NORMAL, "[BOOT] sync_tip round=%llu\n", (unsigned long long)synced_last_round);
@@ -2614,12 +2760,27 @@ int main(int argc, char** argv)
                    no_progress_sec);
         }
 
+        const bool have_peers = !peer_last_round.empty();
+        const bool is_synced_or_standalone =
+            (last_committed_round >= synced_last_round) &&
+            (!have_peers || synced_last_round > 0);
+        const uint64_t target_round = last_committed_round + 1;
+        const bool proposer_eligible =
+            IsValidatorForRound(signer_id, target_round) ||
+            IsPowEligibleForRound(signer_id, target_round);
+        const bool joiner_admission_ok = (cfg.joiner_mode == 0) || proposer_eligible;
+        if (cfg.autopropose != 0 && !joiner_admission_ok)
+            Logf(LOG_DEBUG, "joiner_gate skip_autopropose round=%llu eligible=%d synced=%llu local=%llu\n",
+                 (unsigned long long)target_round,
+                 proposer_eligible ? 1 : 0,
+                 (unsigned long long)synced_last_round,
+                 (unsigned long long)last_committed_round);
         if (cfg.autopropose != 0 &&
-            last_committed_round >= synced_last_round &&
+            is_synced_or_standalone &&
+            joiner_admission_ok &&
             (time(NULL) - last_autopropose_tick) >= dynamic_autopropose_interval_sec)
         {
             RoundBatch batch;
-            const uint64_t target_round = last_committed_round + 1;
             if (!EnsureEpochTransitionForRound(target_round, "autopropose"))
             {
                 printf("drop autopropose epoch_transition_invalid round=%llu\n",
@@ -2757,95 +2918,110 @@ int main(int argc, char** argv)
                 Vote vote;
                 if (engine.ValidateAndVote(batch, &vote))
                 {
-                    vote.validator_id = signer_id;
-                    std::vector<uint8_t> m;
-                    WriteU64LE(&m, vote.round);
-                    m.insert(m.end(), vote.batch_hash.v, vote.batch_hash.v + 32);
-                    m.insert(m.end(), vote.validator_id.v, vote.validator_id.v + 32);
-                    if (crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))
+                    uint8_t local_vote_type = 0;
+                    if (!ResolveVoteEligibilityForRound(signer_id, batch.round, &local_vote_type))
                     {
-                        const std::string k = Bytes32Key(vote.batch_hash);
-                        const std::string voter_key((const char*)vote.validator_id.v, 32);
-                        if (!known_vote_ids[k].count(voter_key))
+                        printf("sync_only skip_vote round=%llu\n",
+                               (unsigned long long)batch.round);
+                    }
+                    else
+                    {
+                        vote.validator_id = signer_id;
+                        vote.eligibility_type = local_vote_type;
+                        std::vector<uint8_t> m;
+                        WriteU64LE(&m, vote.round);
+                        m.insert(m.end(), vote.batch_hash.v, vote.batch_hash.v + 32);
+                        m.insert(m.end(), vote.validator_id.v, vote.validator_id.v + 32);
+                        m.push_back(vote.eligibility_type);
+                        if (crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))
                         {
-                            known_vote_ids[k].insert(voter_key);
-                            known_votes[k].push_back(vote);
-                        }
-                        QuorumCertificate local_qc;
-                        local_qc.round = batch.round;
-                        local_qc.batch_hash = batch.batch_hash;
-                        local_qc.votes = known_votes[k];
-                        bool local_supermajority = true;
-                        if (batch.round > economics_policy.genesis_bootstrap_rounds)
-                        {
-                            ValidatorEpoch epoch;
-                            if (!vset.GetEpochForRound(batch.round, &epoch))
-                                local_supermajority = false;
-                            else
-                                local_supermajority = HasSupermajorityPower(epoch, local_qc);
-                        }
-                        if (local_supermajority && batch.round > last_committed_round)
-                        {
-                            if (engine.Commit(batch, local_qc))
+                            const std::string k = Bytes32Key(vote.batch_hash);
+                            const std::string voter_key((const char*)vote.validator_id.v, 32);
+                            if (!known_vote_ids[k].count(voter_key))
                             {
-                                std::vector<uint8_t> local_commit_payload;
-                                if (!SerializeCommitPayload(batch, local_qc, &local_commit_payload))
-                                {
-                                    printf("cache_serialize_failed source=local_commit round=%llu\n",
-                                           (unsigned long long)batch.round);
-                                }
-                                else if (!AppendCommitPayloadCacheDedup(commit_payload_cache, local_commit_payload))
-                                {
-                                    printf("cache_append_failed source=local_commit round=%llu\n",
-                                           (unsigned long long)batch.round);
-                                }
-                                last_committed_round = batch.round;
-                                last_progress_round = last_committed_round;
-                                last_progress_time = time(NULL);
-                                known_batches.erase(Bytes32Key(batch.batch_hash));
-                                known_votes.erase(Bytes32Key(batch.batch_hash));
-                                known_vote_ids.erase(Bytes32Key(batch.batch_hash));
-                                const uint64_t minted = SumBatchMintValue(batch);
-                                const uint64_t fees = SumBatchFees(batch);
-                                const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
-                                const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
-                                const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
-                                Logf(LOG_NORMAL, "[COMMIT] ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
-                                       (unsigned long long)batch.round,
-                                       batch.spends.size(),
-                                       batch.mints.size(),
-                                       (unsigned long long)minted,
-                                       (unsigned long long)fees,
-                                       (unsigned long long)subsidy,
-                                       miner_hex.c_str(),
-                                       target_hex.c_str());
-                                BroadcastSyncStatus();
+                                known_vote_ids[k].insert(voter_key);
+                                known_votes[k].push_back(vote);
                             }
-                            else
+                            QuorumCertificate local_qc;
+                            local_qc.round = batch.round;
+                            local_qc.batch_hash = batch.batch_hash;
+                            local_qc.votes = known_votes[k];
+                            bool local_supermajority = true;
+                            if (batch.round > economics_policy.genesis_bootstrap_rounds)
                             {
-                                Logf(LOG_NORMAL, "[COMMIT][REJECT] round=%llu code=%d reason=%s\n",
-                                       (unsigned long long)batch.round,
-                                       (int)engine.last_reject_code(),
-                                       engine.last_reject_message().c_str());
-                                // Prevent endless rebroadcast of a poisoned pending batch.
-                                known_batches.erase(Bytes32Key(batch.batch_hash));
-                                known_votes.erase(Bytes32Key(batch.batch_hash));
-                                known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+                                ValidatorEpoch epoch;
+                                if (!vset.GetEpochForRound(batch.round, &epoch))
+                                    local_supermajority = false;
+                                else
+                                {
+                                    std::set<std::string> pow_recent_ids;
+                                    BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
+                                    local_supermajority = HasSupermajorityPowerTyped(epoch, local_qc, pow_recent_ids, 1);
+                                }
                             }
-                        }
-                        std::vector<uint8_t> vote_payload;
-                        if (SerializeVotePayload(vote, &vote_payload))
-                        {
-                            WireEnvelope outv;
-                            outv.magic = WireMagicMainnet();
-                            outv.version = 1;
-                            outv.msg_type = WIRE_MSG_VOTE;
-                            outv.payload_len = (uint32_t)vote_payload.size();
-                            outv.unix_ms = 0;
-                            outv.payload_hash = Bytes32();
-                            outv.payload.swap(vote_payload);
-                            if (!reactor.Broadcast(outv))
-                                printf("drop autopropose_vote send_failed\n");
+                            if (local_supermajority && batch.round > last_committed_round)
+                            {
+                                if (engine.Commit(batch, local_qc))
+                                {
+                                    std::vector<uint8_t> local_commit_payload;
+                                    if (!SerializeCommitPayload(batch, local_qc, &local_commit_payload))
+                                    {
+                                        printf("cache_serialize_failed source=local_commit round=%llu\n",
+                                               (unsigned long long)batch.round);
+                                    }
+                                    else if (!AppendCommitPayloadCacheDedup(commit_payload_cache, local_commit_payload))
+                                    {
+                                        printf("cache_append_failed source=local_commit round=%llu\n",
+                                               (unsigned long long)batch.round);
+                                    }
+                                    last_committed_round = batch.round;
+                                    last_progress_round = last_committed_round;
+                                    last_progress_time = time(NULL);
+                                    known_batches.erase(Bytes32Key(batch.batch_hash));
+                                    known_votes.erase(Bytes32Key(batch.batch_hash));
+                                    known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+                                    const uint64_t minted = SumBatchMintValue(batch);
+                                    const uint64_t fees = SumBatchFees(batch);
+                                    const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
+                                    const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
+                                    const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
+                                    Logf(LOG_NORMAL, "[COMMIT] ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
+                                           (unsigned long long)batch.round,
+                                           batch.spends.size(),
+                                           batch.mints.size(),
+                                           (unsigned long long)minted,
+                                           (unsigned long long)fees,
+                                           (unsigned long long)subsidy,
+                                           miner_hex.c_str(),
+                                           target_hex.c_str());
+                                    BroadcastSyncStatus();
+                                }
+                                else
+                                {
+                                    Logf(LOG_NORMAL, "[COMMIT][REJECT] round=%llu code=%d reason=%s\n",
+                                           (unsigned long long)batch.round,
+                                           (int)engine.last_reject_code(),
+                                           engine.last_reject_message().c_str());
+                                    // Prevent endless rebroadcast of a poisoned pending batch.
+                                    known_batches.erase(Bytes32Key(batch.batch_hash));
+                                    known_votes.erase(Bytes32Key(batch.batch_hash));
+                                    known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+                                }
+                            }
+                            std::vector<uint8_t> vote_payload;
+                            if (SerializeVotePayload(vote, &vote_payload))
+                            {
+                                WireEnvelope outv;
+                                outv.magic = WireMagicMainnet();
+                                outv.version = 1;
+                                outv.msg_type = WIRE_MSG_VOTE;
+                                outv.payload_len = (uint32_t)vote_payload.size();
+                                outv.unix_ms = 0;
+                                outv.payload_hash = Bytes32();
+                                outv.payload.swap(vote_payload);
+                                if (!reactor.Broadcast(outv))
+                                    printf("drop autopropose_vote send_failed\n");
+                            }
                         }
                     }
                 }

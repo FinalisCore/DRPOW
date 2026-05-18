@@ -37,12 +37,13 @@ static bool BuildBatchHash(const RoundBatch& batch, Bytes32* out)
     return Sha256(encoded, out);
 }
 
-static std::vector<uint8_t> BuildVoteSig(const CryptoBackend& cb, const uint8_t privkey[32], uint64_t round, const Bytes32& batch_hash, const Bytes32& validator_id)
+static std::vector<uint8_t> BuildVoteSig(const CryptoBackend& cb, const uint8_t privkey[32], uint64_t round, const Bytes32& batch_hash, const Bytes32& validator_id, uint8_t eligibility_type)
 {
     std::vector<uint8_t> m;
     WriteU64LE(&m, round);
     m.insert(m.end(), batch_hash.v, batch_hash.v + 32);
     m.insert(m.end(), validator_id.v, validator_id.v + 32);
+    m.push_back(eligibility_type);
     std::vector<uint8_t> sig;
     cb.SignEd25519(privkey, m.empty() ? NULL : &m[0], m.size(), &sig);
     return sig;
@@ -127,7 +128,8 @@ int main()
             v.round = 1;
             v.batch_hash = batch.batch_hash;
             v.validator_id = vals[i].validator_id;
-            v.signature = BuildVoteSig(*crypto_backend, &validator_privs[i][0], v.round, v.batch_hash, v.validator_id);
+            v.eligibility_type = VOTE_ELIGIBILITY_VALIDATOR_SET;
+            v.signature = BuildVoteSig(*crypto_backend, &validator_privs[i][0], v.round, v.batch_hash, v.validator_id, v.eligibility_type);
             qc.votes.push_back(v);
         }
 
