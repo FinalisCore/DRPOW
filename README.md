@@ -1,4 +1,4 @@
-# rpow
+# DRPOW
 
 ## Run Node
 
@@ -7,9 +7,9 @@ Only two launcher scripts exist:
 - `src/scripts/start_mainnet.sh`
 
 Both launchers:
-- build `rpov2_node` and `rpov2_cli`,
-- write runtime config under `~/.rpov/config/`,
-- use one node key file (`~/.rpov/keys/node_signer_privkey.hex` by default),
+- build `drpow_node` and `drpow_cli`,
+- write runtime config under `~/.drpow/config/`,
+- use one node key file (`~/.drpow/keys/node_signer_privkey.hex` by default),
 - copy canonical genesis artifact from repo:
   - `src/genesis/testnet/genesis_epoch0.bin`
   - `src/genesis/mainnet/genesis_epoch0.bin`
@@ -51,18 +51,18 @@ Wallet commands:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
-source ~/.rpov/env_liboqs.sh
-build/rpov2_cli wallet init
-build/rpov2_cli wallet show
-build/rpov2_cli wallet info
-build/rpov2_cli wallet miner-info
-build/rpov2_cli getbalance
-build/rpov2_cli getutxo
+source ~/.drpow/env_liboqs.sh
+build/drpow_cli wallet init
+build/drpow_cli wallet show
+build/drpow_cli wallet info
+build/drpow_cli wallet miner-info
+build/drpow_cli getbalance
+build/drpow_cli getutxo
 ```
 
 Send transaction:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
-build/rpov2_cli send --to <address> --amount 0.001 --node 127.0.0.1:29101
+build/drpow_cli send --to <address> --amount 0.001 --node 127.0.0.1:29101
 ```

@@ -1,4 +1,4 @@
-#include "rpov2/wallet.h"
+#include "drpow/wallet.h"
 
 #include <errno.h>
 #include <string.h>
@@ -6,9 +6,9 @@
 
 #include <fstream>
 
-#include "rpov2/address.h"
+#include "drpow/address.h"
 
-namespace rpov2 {
+namespace drpow {
 
 static bool EnsureDir(const std::string& d)
 {
@@ -138,4 +138,4 @@ bool LoadOrCreateWalletIdentity(const std::string& data_dir,
     return true;
 }
 
-}  // namespace rpov2
+}  // namespace drpow

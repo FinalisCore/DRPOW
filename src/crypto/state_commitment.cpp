@@ -3,9 +3,9 @@
 #include <cstddef>
 #include <vector>
 
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-namespace rpov2 {
+namespace drpow {
 
 namespace {
 
@@ -32,7 +32,7 @@ bool ComputeStateRootV1(const std::vector< std::vector<uint8_t> >& entries_256, 
 
     if (entries_256.empty())
     {
-        return HashTagged("RPOV2:empty:v1", NULL, 0, NULL, 0, out_root);
+        return HashTagged("DRPOW:empty:v1", NULL, 0, NULL, 0, out_root);
     }
 
     std::vector<Bytes32> layer;
@@ -43,7 +43,7 @@ bool ComputeStateRootV1(const std::vector< std::vector<uint8_t> >& entries_256, 
         if (entries_256[i].empty())
             return false;
         Bytes32 h;
-        if (!HashTagged("RPOV2:leaf:v1", &entries_256[i][0], entries_256[i].size(), NULL, 0, &h))
+        if (!HashTagged("DRPOW:leaf:v1", &entries_256[i][0], entries_256[i].size(), NULL, 0, &h))
             return false;
         layer.push_back(h);
     }
@@ -58,7 +58,7 @@ bool ComputeStateRootV1(const std::vector< std::vector<uint8_t> >& entries_256, 
             const Bytes32& left = layer[i];
             const Bytes32& right = (i + 1 < layer.size()) ? layer[i + 1] : layer[i];
             Bytes32 parent;
-            if (!HashTagged("RPOV2:node:v1", left.v, 32, right.v, 32, &parent))
+            if (!HashTagged("DRPOW:node:v1", left.v, 32, right.v, 32, &parent))
                 return false;
             next.push_back(parent);
         }

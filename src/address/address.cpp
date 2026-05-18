@@ -1,13 +1,13 @@
-#include "rpov2/address.h"
+#include "drpow/address.h"
 
 #include <stdio.h>
 #include <string.h>
 
 #include <vector>
 
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-namespace rpov2 {
+namespace drpow {
 
 static std::string Hex(const uint8_t* p, size_t n)
 {
@@ -64,7 +64,7 @@ std::string AddressFromPubkey(const Bytes32& pubkey, uint32_t network_magic)
 
     char cbuf[9];
     snprintf(cbuf, sizeof(cbuf), "%08x", cs);
-    return std::string("rpov2_") + Hex(body.empty() ? NULL : &body[0], body.size()) + cbuf;
+    return std::string("drpow_") + Hex(body.empty() ? NULL : &body[0], body.size()) + cbuf;
 }
 
 bool ParseAddress(const std::string& address, uint32_t expected_network_magic, Bytes32* out_pubkey)
@@ -73,7 +73,7 @@ bool ParseAddress(const std::string& address, uint32_t expected_network_magic, B
         return false;
     if (address.size() != 6 + (4 + 32) * 2 + 8)
         return false;
-    if (address.substr(0, 6) != "rpov2_")
+    if (address.substr(0, 6) != "drpow_")
         return false;
 
     const std::string payload = address.substr(6, (4 + 32) * 2);
@@ -98,4 +98,4 @@ bool ParseAddress(const std::string& address, uint32_t expected_network_magic, B
     return true;
 }
 
-}  // namespace rpov2
+}  // namespace drpow

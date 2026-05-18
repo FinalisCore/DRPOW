@@ -10,7 +10,7 @@
 #include "proof_verifier.h"
 #include "state_store.h"
 
-namespace rpov2 {
+namespace drpow {
 
 class RegistryStateStore : public StateStore {
 public:

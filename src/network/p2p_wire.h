@@ -8,9 +8,9 @@
 #include "consensus_round.h"
 #include "finality_qc.h"
 #include "state_store.h"
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 
-namespace rpov2 {
+namespace drpow {
 
 enum WireMsgType {
     WIRE_MSG_HELLO = 0,

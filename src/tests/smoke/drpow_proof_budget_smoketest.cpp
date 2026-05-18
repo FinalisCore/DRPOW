@@ -8,9 +8,9 @@
 #include "proof_verifier.h"
 #include "registry_state_store.h"
 #include "static_validator_set.h"
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-using namespace rpov2;
+using namespace drpow;
 
 static void Fill32(Bytes32* b, uint8_t seed)
 {
@@ -56,10 +56,10 @@ static std::vector<uint8_t> BuildMintSig(const CryptoBackend& cb, const uint8_t 
 
 int main()
 {
-    remove("/tmp/rpov2_budget_registry.bin");
-    remove("/tmp/rpov2_budget_registry.bin.ledger");
-    remove("/tmp/rpov2_budget_commit.log");
-    remove("/tmp/rpov2_budget_evidence.log");
+    remove("/tmp/drpow_budget_registry.bin");
+    remove("/tmp/drpow_budget_registry.bin.ledger");
+    remove("/tmp/drpow_budget_commit.log");
+    remove("/tmp/drpow_budget_evidence.log");
 
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
@@ -83,9 +83,9 @@ int main()
     vals[0].voting_power = 1;
     StaticValidatorSet vset(1000, vals);
 
-    RegistryStateStore store("/tmp/rpov2_budget_registry.bin",
-                             "/tmp/rpov2_budget_commit.log",
-                             "/tmp/rpov2_budget_evidence.log",
+    RegistryStateStore store("/tmp/drpow_budget_registry.bin",
+                             "/tmp/drpow_budget_commit.log",
+                             "/tmp/drpow_budget_evidence.log",
                              &proof_verifier,
                              crypto.get(),
                              signer_priv,

@@ -3,9 +3,9 @@
 
 #include <cstddef>
 
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 
-namespace rpov2 {
+namespace drpow {
 
 struct RoundBatch;
 

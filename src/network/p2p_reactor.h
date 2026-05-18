@@ -8,9 +8,9 @@
 #include <vector>
 
 #include "p2p_wire.h"
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 
-namespace rpov2 {
+namespace drpow {
 
 class P2PReactor {
 public:
@@ -59,6 +59,6 @@ private:
     bool ParseOneFrame(std::vector<uint8_t>* in, std::vector<uint8_t>* one_frame);
 };
 
-}  // namespace rpov2
+}  // namespace drpow
 
 #endif

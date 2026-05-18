@@ -5,9 +5,9 @@
 
 #include "crypto_backend.h"
 #include "proof_verifier.h"
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-using namespace rpov2;
+using namespace drpow;
 
 static void Fill32(Bytes32* b, uint8_t seed)
 {

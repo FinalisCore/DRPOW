@@ -1,6 +1,6 @@
 #include "static_validator_set.h"
 
-namespace rpov2 {
+namespace drpow {
 
 StaticValidatorSet::StaticValidatorSet(uint64_t epoch_length, const std::vector<Validator>& validators)
     : epoch_length_(epoch_length), validators_(validators)

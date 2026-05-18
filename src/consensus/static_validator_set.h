@@ -3,7 +3,7 @@
 
 #include "validator_set.h"
 
-namespace rpov2 {
+namespace drpow {
 
 class StaticValidatorSet : public ValidatorSet {
 public:

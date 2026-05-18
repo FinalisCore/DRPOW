@@ -9,10 +9,10 @@
 #include "economics_policy.h"
 #include "proof_verifier.h"
 #include "state_store.h"
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 #include "validator_set.h"
 
-namespace rpov2 {
+namespace drpow {
 
 enum ConsensusRejectCode {
     REJECT_NONE = 0,

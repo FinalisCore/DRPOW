@@ -8,9 +8,9 @@
 #include "proof_verifier.h"
 #include "registry_state_store.h"
 #include "static_validator_set.h"
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-using namespace rpov2;
+using namespace drpow;
 
 static void Fill32(Bytes32* b, uint8_t seed)
 {
@@ -66,11 +66,11 @@ static std::vector<uint8_t> BuildMintSig(const CryptoBackend& cb, const uint8_t 
 
 int main()
 {
-    const char* reg = "/tmp/rpov2_replay_registry.bin";
-    const char* log = "/tmp/rpov2_replay_commit.log";
-    const char* evd = "/tmp/rpov2_replay_evidence.log";
+    const char* reg = "/tmp/drpow_replay_registry.bin";
+    const char* log = "/tmp/drpow_replay_commit.log";
+    const char* evd = "/tmp/drpow_replay_evidence.log";
     remove(reg);
-    remove("/tmp/rpov2_replay_registry.bin.ledger");
+    remove("/tmp/drpow_replay_registry.bin.ledger");
     remove(log);
     remove(evd);
 

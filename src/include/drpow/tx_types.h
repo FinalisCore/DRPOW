@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <vector>
 
-namespace rpov2 {
+namespace drpow {
 
 struct Bytes32 {
     uint8_t v[32];

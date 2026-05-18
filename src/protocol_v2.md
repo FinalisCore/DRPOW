@@ -34,10 +34,10 @@ The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHALL`, `SHALL NOT`, `SHOULD`, an
 - `reserved` (32 bytes)
 4. Registry iteration order MUST be deterministic and byte-lexicographic by `coin_id`.
 5. State root computation MUST be deterministic:
-- Leaf hash: `H("RPOV2:leaf:v1" || entry_bytes)`
-- Parent hash: `H("RPOV2:node:v1" || left || right)`
+- Leaf hash: `H("DRPOW:leaf:v1" || entry_bytes)`
+- Parent hash: `H("DRPOW:node:v1" || left || right)`
 - Odd leaf rule: duplicate the last leaf
-- Empty state root: `H("RPOV2:empty:v1")`
+- Empty state root: `H("DRPOW:empty:v1")`
 6. All nodes processing the same accepted commit MUST derive identical post-state root bytes.
 
 ### 3.2 Ownership

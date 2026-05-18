@@ -5,9 +5,9 @@
 #include <stdint.h>
 #include <vector>
 
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 
-namespace rpov2 {
+namespace drpow {
 
 void WriteU64LE(std::vector<uint8_t>* out, uint64_t v);
 void WriteBytes32(std::vector<uint8_t>* out, const Bytes32& v);

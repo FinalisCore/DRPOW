@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include <vector>
 
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 
-namespace rpov2 {
+namespace drpow {
 
 struct Validator {
     Bytes32 validator_id;

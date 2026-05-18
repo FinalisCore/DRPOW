@@ -5,9 +5,9 @@
 #include <string>
 #include <string.h>
 
-#include "rpov2/tx_codec.h"
+#include "drpow/tx_codec.h"
 
-namespace rpov2 {
+namespace drpow {
 
 struct ShareLess {
     bool operator()(const LotteryShare& a, const LotteryShare& b) const

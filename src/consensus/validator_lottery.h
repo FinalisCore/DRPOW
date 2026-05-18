@@ -5,10 +5,10 @@
 #include <stdint.h>
 #include <vector>
 
-#include "rpov2/tx_types.h"
+#include "drpow/tx_types.h"
 #include "validator_set.h"
 
-namespace rpov2 {
+namespace drpow {
 
 struct LotteryShare {
     Bytes32 state_hash;

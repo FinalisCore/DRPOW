@@ -5,7 +5,7 @@
 
 #include "validator_set.h"
 
-namespace rpov2 {
+namespace drpow {
 
 class PowLotteryValidatorSet : public ValidatorSet {
 public:
