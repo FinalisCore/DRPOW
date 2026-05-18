@@ -1680,6 +1680,35 @@ int main(int argc, char** argv)
             reactor.Disconnect(fd);
         }
     };
+    std::map<std::string, uint64_t> drop_counters;
+    uint64_t drop_summary_last_ms = now_ms();
+    auto note_drop = [&](const char* reason) {
+        if (!reason)
+            return;
+        drop_counters[std::string(reason)] += 1;
+    };
+    auto flush_drop_summary = [&](bool force) {
+        const uint64_t now = now_ms();
+        if (!force && now > drop_summary_last_ms && (now - drop_summary_last_ms) < 30000ULL)
+            return;
+        if (drop_counters.empty())
+        {
+            drop_summary_last_ms = now;
+            return;
+        }
+        std::string msg = "[NET] drop_summary";
+        for (std::map<std::string, uint64_t>::const_iterator it = drop_counters.begin();
+             it != drop_counters.end(); ++it)
+        {
+            char buf[96];
+            snprintf(buf, sizeof(buf), " %s=%llu", it->first.c_str(), (unsigned long long)it->second);
+            msg += buf;
+        }
+        msg += "\n";
+        Logf(LOG_NORMAL, "%s", msg.c_str());
+        drop_counters.clear();
+        drop_summary_last_ms = now;
+    };
     auto allow_msg = [&](int fd, uint16_t msg_type) -> bool {
         PeerRateState& rs = get_rate(fd);
         const uint64_t n = now_ms();
@@ -1704,7 +1733,8 @@ int main(int argc, char** argv)
         }
         if (*bucket < cost)
         {
-            penalize_peer(fd, 2, "rate_limit");
+            // Rate-limit should protect resources, but by itself should not
+            // escalate to quarantine. No ban-score increment here.
             return false;
         }
         *bucket -= cost;
@@ -1725,7 +1755,7 @@ int main(int argc, char** argv)
         }
         if (!allow_msg(peer_fd, env.msg_type))
         {
-            printf("drop rate_limited fd=%d msg_type=%u\n", peer_fd, (unsigned)env.msg_type);
+            note_drop("rate_limited");
             return;
         }
         if (env.msg_type == WIRE_MSG_HELLO)
@@ -1782,8 +1812,9 @@ int main(int argc, char** argv)
             it_existing = peer_fd_by_node_id.find(node_key);
             if (it_existing != peer_fd_by_node_id.end() && it_existing->second != peer_fd)
             {
-                printf("drop hello peer_id_collision fd=%d existing_fd=%d\n", peer_fd, it_existing->second);
-                penalize_peer(peer_fd, 10, "hello_peer_id_collision");
+                note_drop("hello_peer_id_collision");
+                // Expected during simultaneous outbound/inbound dialing.
+                // Keep current canonical connection and close duplicate quietly.
                 reactor.Disconnect(peer_fd);
                 return;
             }
@@ -1933,8 +1964,8 @@ int main(int argc, char** argv)
                 // Joiners may emit sync status during handshake churn; ignore until authenticated.
                 return;
             }
-            printf("drop unauthenticated fd=%d msg_type=%u\n", peer_fd, (unsigned)env.msg_type);
-            penalize_peer(peer_fd, 8, "unauthenticated_message");
+            note_drop("unauthenticated_message");
+            // Close unauthenticated noisy leg without score escalation.
             reactor.Disconnect(peer_fd);
             return;
         }
@@ -2812,6 +2843,7 @@ int main(int argc, char** argv)
         const int sync_period_sec = (synced_last_round > last_committed_round) ? 1 : 5;
         if ((time(NULL) - last_sync_tick) >= sync_period_sec)
         {
+            flush_drop_summary(false);
             BroadcastSyncStatus();
             TryCatchUpFromCache();
             PersistKnownPeers();
@@ -2871,6 +2903,7 @@ int main(int argc, char** argv)
             break;
     }
 
+    flush_drop_summary(true);
     reactor.Stop();
     PersistKnownPeers();
     Bytes32 final_root;
