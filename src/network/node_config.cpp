@@ -58,6 +58,7 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     cfg.autopropose = 0;
     cfg.autopropose_interval_sec = 3;
     cfg.network_magic = 0x52504f57u;
+    cfg.log_level = "normal";
 
     std::ifstream in(path.c_str());
     if (!in.good())
@@ -104,6 +105,8 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
             cfg.signer_privkey_hex = v;
         else if (k == "genesis_hash_hex")
             cfg.genesis_hash_hex = v;
+        else if (k == "log_level")
+            cfg.log_level = v;
         else if (k == "validator_pubkeys_hex")
         {
             cfg.validator_pubkeys_hex.clear();
@@ -164,6 +167,12 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
                 *err = "validator_pubkeys_hex entries must be 64 hex chars";
             return false;
         }
+    }
+    if (!(cfg.log_level == "quiet" || cfg.log_level == "normal" || cfg.log_level == "debug"))
+    {
+        if (err)
+            *err = "log_level must be quiet|normal|debug";
+        return false;
     }
     *out = cfg;
     return true;

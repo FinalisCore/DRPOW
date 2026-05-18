@@ -11,6 +11,7 @@ PUBLIC_ENDPOINT="${PUBLIC_ENDPOINT:-}"
 AUTOPROPOSE="${AUTOPROPOSE:-}"
 AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-20}"
 DURATION_SEC="${DURATION_SEC:-0}"
+LOG_LEVEL="${LOG_LEVEL:-normal}"
 
 CONFIG_DIR="${RPOV_HOME}/config"
 DATA_DIR="${DATA_DIR:-${RPOV_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
@@ -118,6 +119,7 @@ autopropose=${AUTOPROPOSE}
 autopropose_interval_sec=${AUTOPROPOSE_INTERVAL_SEC}
 signer_privkey_hex=${SIGNER_PRIVKEY_HEX}
 genesis_hash_hex=${GENESIS_HASH_HEX}
+log_level=${LOG_LEVEL}
 CFG
   if [ -n "${SEED_PEER}" ]; then
     echo "peers=${SEED_PEER}" >> "${CONF_FILE}"

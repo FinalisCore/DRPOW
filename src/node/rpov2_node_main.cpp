@@ -14,6 +14,7 @@
 #include <fstream>
 #include <algorithm>
 #include <sstream>
+#include <stdarg.h>
 
 #include "consensus_round.h"
 #include "crypto_backend.h"
@@ -27,6 +28,29 @@
 #include "rpov2/tx_codec.h"
 
 using namespace rpov2;
+
+enum {
+    LOG_QUIET = 0,
+    LOG_NORMAL = 1,
+    LOG_DEBUG = 2
+};
+
+static int g_log_level = LOG_NORMAL;
+
+static bool LogEnabled(int level)
+{
+    return level <= g_log_level;
+}
+
+static void Logf(int level, const char* fmt, ...)
+{
+    if (!LogEnabled(level))
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    vprintf(fmt, ap);
+    va_end(ap);
+}
 
 static bool HexTo32(const std::string& s, uint8_t out[32])
 {
@@ -934,6 +958,12 @@ int main(int argc, char** argv)
         printf("config_error: invalid network_magic\n");
         return 2;
     }
+    if (cfg.log_level == "quiet")
+        g_log_level = LOG_QUIET;
+    else if (cfg.log_level == "debug")
+        g_log_level = LOG_DEBUG;
+    else
+        g_log_level = LOG_NORMAL;
 
     std::string actual_genesis_hash;
     if (!VerifyGenesisHashLocked(cfg.data_dir, cfg.genesis_hash_hex, &actual_genesis_hash))
@@ -2412,17 +2442,18 @@ int main(int argc, char** argv)
         return 7;
     }
 
-    printf("node_started port=%u data_dir=%s peers=%zu duration_sec=%d\n",
+    Logf(LOG_NORMAL, "[BOOT] node_started port=%u data_dir=%s peers=%zu duration_sec=%d\n",
            (unsigned)cfg.bind_port,
            cfg.data_dir.c_str(),
            cfg.peers.size(),
            cfg.duration_sec);
-    printf("network_magic=0x%08x\n", (unsigned)cfg.network_magic);
-    printf("validator_set size=%zu\n", vals.size());
-    printf("autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
-    printf("commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
-    printf("sync_tip round=%llu\n", (unsigned long long)synced_last_round);
-    printf("sync_lag local_round=%llu synced_round=%llu lag=%llu cache_entries=%zu\n",
+    Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
+    Logf(LOG_NORMAL, "[BOOT] validator_set size=%zu\n", vals.size());
+    Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
+    Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
+    Logf(LOG_NORMAL, "[BOOT] commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
+    Logf(LOG_NORMAL, "[BOOT] sync_tip round=%llu\n", (unsigned long long)synced_last_round);
+    Logf(LOG_NORMAL, "[BOOT] sync_lag local=%llu synced=%llu lag=%llu cache_entries=%zu\n",
            (unsigned long long)last_committed_round,
            (unsigned long long)synced_last_round,
            (unsigned long long)((synced_last_round > last_committed_round) ? (synced_last_round - last_committed_round) : 0),
@@ -2464,7 +2495,7 @@ int main(int argc, char** argv)
         if (target_interval_sec != dynamic_autopropose_interval_sec)
         {
             dynamic_autopropose_interval_sec = target_interval_sec;
-            printf("round_timing_adjust interval_sec=%d base_sec=%d peers=%zu lag=%llu no_progress_sec=%d last_progress_round=%llu\n",
+            Logf(LOG_NORMAL, "[CTRL] round_interval now=%d base=%d peers=%zu lag=%llu no_progress_sec=%d last_progress_round=%llu\n",
                    dynamic_autopropose_interval_sec,
                    base_interval_sec,
                    peer_last_round.size(),
@@ -2490,7 +2521,7 @@ int main(int argc, char** argv)
         if (target_max_spends != dynamic_max_spends_per_round)
         {
             dynamic_max_spends_per_round = target_max_spends;
-            printf("round_payload_adjust max_spends=%zu base_max_spends=%zu peers=%zu lag=%llu no_progress_sec=%d\n",
+            Logf(LOG_NORMAL, "[CTRL] payload_limit max_spends=%zu base=%zu peers=%zu lag=%llu no_progress_sec=%d\n",
                    dynamic_max_spends_per_round,
                    economics_policy.max_spends_per_round,
                    peer_last_round.size(),
@@ -2543,7 +2574,7 @@ int main(int argc, char** argv)
                 mint.miner_pubkey = signer_id;
                 mint.signature = BuildMintSigLocal(*crypto, signer_priv, mint);
                 batch.mints.push_back(mint);
-                printf("autopropose_prepare round=%llu subsidy=%llu tax_ppm=%llu burn_pool_refill=%llu reserve_budget=%llu mint_value=%llu target=%s miner=%s\n",
+                Logf(LOG_NORMAL, "[AUTO] prepare round=%llu subsidy=%llu tax_ppm=%llu burn_refill=%llu reserve=%llu mint=%llu target=%s miner=%s\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)subsidy,
                        (unsigned long long)TransferTaxPpmForRound(batch.round, economics_policy),
@@ -2554,7 +2585,7 @@ int main(int argc, char** argv)
                        Hex32(mint.miner_pubkey).c_str());
                 if (!BuildBatchHashLocal(batch, &batch.batch_hash))
                 {
-                    printf("autopropose_reject round=%llu stage=batch_hash reason=build_batch_hash_failed\n",
+                    Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=batch_hash reason=build_batch_hash_failed\n",
                            (unsigned long long)batch.round);
                     for (size_t i = 0; i < drained_spends.size(); ++i)
                     {
@@ -2566,7 +2597,7 @@ int main(int argc, char** argv)
                 }
                 if (!engine.Propose(batch))
                 {
-                    printf("autopropose_reject round=%llu stage=propose code=%d reason=%s\n",
+                    Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=propose code=%d reason=%s\n",
                            (unsigned long long)batch.round,
                            (int)engine.last_reject_code(),
                            engine.last_reject_message().c_str());
@@ -2653,7 +2684,7 @@ int main(int argc, char** argv)
                                 const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
                                 const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
                                 const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
-                                printf("commit ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
+                                Logf(LOG_NORMAL, "[COMMIT] ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
                                        (unsigned long long)batch.round,
                                        batch.spends.size(),
                                        batch.mints.size(),
@@ -2683,10 +2714,10 @@ int main(int argc, char** argv)
                 }
                 else
                 {
-                    printf("autopropose_vote_skip round=%llu reason=validate_and_vote_failed\n",
+                    Logf(LOG_DEBUG, "[AUTO] vote_skip round=%llu reason=validate_and_vote_failed\n",
                            (unsigned long long)batch.round);
                 }
-                printf("autopropose round=%llu spends=%zu mints=%zu fees=%llu minted=%llu\n",
+                Logf(LOG_DEBUG, "[AUTO] broadcast round=%llu spends=%zu mints=%zu fees=%llu minted=%llu\n",
                        (unsigned long long)batch.round,
                        batch.spends.size(),
                        batch.mints.size(),
@@ -2706,12 +2737,12 @@ int main(int argc, char** argv)
             const uint64_t cache_sz = FileSizeBytes(commit_payload_cache);
             const uint64_t synclog_sz = FileSizeBytes(sync_cache);
             const uint64_t utxo_est = reg_sz / 264ULL;
-            printf("sync_tick local_round=%llu synced_round=%llu lag=%llu cache_entries=%zu\n",
+            Logf(LOG_DEBUG, "[SYNC] tick local=%llu synced=%llu lag=%llu cache_entries=%zu\n",
                    (unsigned long long)last_committed_round,
                    (unsigned long long)synced_last_round,
                    (unsigned long long)((synced_last_round > last_committed_round) ? (synced_last_round - last_committed_round) : 0),
                    CountCommitPayloadCacheEntries(commit_payload_cache));
-            printf("disk_stats registry_bytes=%llu commitlog_bytes=%llu cache_bytes=%llu sync_log_bytes=%llu utxo_est=%llu\n",
+            Logf(LOG_DEBUG, "[DISK] registry=%llu commitlog=%llu cache=%llu sync_log=%llu utxo_est=%llu\n",
                    (unsigned long long)reg_sz,
                    (unsigned long long)log_sz,
                    (unsigned long long)cache_sz,

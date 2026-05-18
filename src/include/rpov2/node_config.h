@@ -19,6 +19,7 @@ struct NodeConfig {
     std::vector<std::string> validator_pubkeys_hex;
     std::string signer_privkey_hex;
     std::string genesis_hash_hex;
+    std::string log_level;
 };
 
 bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err);

@@ -207,7 +207,7 @@ bool ConsensusRoundEngine::Propose(const RoundBatch& batch)
     if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
         return Fail(REJECT_POW_ELIGIBILITY_INVALID, "pow eligibility invalid");
     if (!HasPowAuthorization(batch, proof_verifier_))
-        return Fail(REJECT_POW_AUTH_INVALID, "pow auth invalid");
+        return Fail(REJECT_POW_TARGET_INVALID, "pow target not met");
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
         return Fail(REJECT_POW_TARGET_INVALID, "pow target derive failed");
@@ -279,7 +279,7 @@ bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertifica
     if (batch.mints.empty())
         return Fail(REJECT_POW_AUTH_MISSING, "pow auth missing");
     if (!HasPowAuthorization(batch, proof_verifier_))
-        return Fail(REJECT_POW_AUTH_INVALID, "pow auth invalid");
+        return Fail(REJECT_POW_TARGET_INVALID, "pow target not met");
 
     if (!state_store_->Begin())
         return Fail(REJECT_STORE_BEGIN_FAILED, "store begin failed");
