@@ -1064,6 +1064,12 @@ int main(int argc, char** argv)
         }
         printf("signer_key_generated file=%s\n", signer_key_file.c_str());
     }
+    Bytes32 params_hash;
+    if (!ComputeDrpowParamsHash(&params_hash))
+    {
+        printf("params_hash_compute_failed\n");
+        return 5;
+    }
     Bytes32 signer_id;
     if (!crypto->PublicFromPrivateEd25519(signer_priv, signer_id.v))
     {
@@ -2073,6 +2079,11 @@ int main(int argc, char** argv)
             peer_node_id_by_fd[peer_fd] = node_id;
             peer_fd_by_node_id[std::string((const char*)node_id.v, 32)] = peer_fd;
             std::string ep = reactor.PeerEndpoint(peer_fd);
+            Logf(LOG_NORMAL, "[HANDSHAKE] ok peer_id=%s endpoint=%s params_version=%s params_hash=%s\n",
+                 Hex32(node_id).c_str(),
+                 ep.empty() ? "<unknown>" : ep.c_str(),
+                 DrpowParamsVersionTag(),
+                 Hex32(params_hash).c_str());
             if (IsValidEndpoint(ep))
             {
                 reactor.AddPeer(ep);
@@ -2678,6 +2689,8 @@ int main(int argc, char** argv)
            cfg.data_dir.c_str(),
            cfg.peers.size(),
            cfg.duration_sec);
+    Logf(LOG_NORMAL, "[BOOT] params_version=%s\n", DrpowParamsVersionTag());
+    Logf(LOG_NORMAL, "[BOOT] params_hash=%s\n", Hex32(params_hash).c_str());
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] validator_set size=%zu\n", vals.size());
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);

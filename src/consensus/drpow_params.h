@@ -6,6 +6,8 @@
 
 namespace drpow {
 
+struct Bytes32;
+
 // Consensus-locked DRPOW parameters.
 // Any value change is a consensus change and requires coordinated upgrade.
 struct DrpowParams {
@@ -25,6 +27,9 @@ struct DrpowParams {
     static const uint64_t kTargetAdjustUpPpmLimit = 2000000;
     static const uint64_t kTargetAdjustDownPpmLimit = 250000;
 };
+
+const char* DrpowParamsVersionTag();
+bool ComputeDrpowParamsHash(Bytes32* out_hash);
 
 }  // namespace drpow
 

@@ -28,6 +28,7 @@ DRPOW_COMMON_SRCS = \
 	crypto/crypto_backend.cpp \
 	crypto/state_commitment.cpp \
 	consensus/economics_policy.cpp \
+	consensus/drpow_params.cpp \
 	network/p2p_wire.cpp \
 	network/node_config.cpp \
 	network/p2p_reactor.cpp \
