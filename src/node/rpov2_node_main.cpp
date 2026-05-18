@@ -2771,6 +2771,17 @@ int main(int argc, char** argv)
                                        target_hex.c_str());
                                 BroadcastSyncStatus();
                             }
+                            else
+                            {
+                                Logf(LOG_NORMAL, "[COMMIT][REJECT] round=%llu code=%d reason=%s\n",
+                                       (unsigned long long)batch.round,
+                                       (int)engine.last_reject_code(),
+                                       engine.last_reject_message().c_str());
+                                // Prevent endless rebroadcast of a poisoned pending batch.
+                                known_batches.erase(Bytes32Key(batch.batch_hash));
+                                known_votes.erase(Bytes32Key(batch.batch_hash));
+                                known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+                            }
                         }
                         std::vector<uint8_t> vote_payload;
                         if (SerializeVotePayload(vote, &vote_payload))
