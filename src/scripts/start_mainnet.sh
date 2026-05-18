@@ -12,6 +12,7 @@ AUTOPROPOSE="${AUTOPROPOSE:-}"
 AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-20}"
 DURATION_SEC="${DURATION_SEC:-0}"
 LOG_LEVEL="${LOG_LEVEL:-normal}"
+PEERS_FILE="${PEERS_FILE:-${RPOV_HOME}/peers.txt}"
 
 CONFIG_DIR="${RPOV_HOME}/config"
 DATA_DIR="${DATA_DIR:-${RPOV_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
@@ -22,6 +23,7 @@ ENV_FILE="${RPOV_ENV_FILE:-${RPOV_HOME}/env_liboqs.sh}"
 GENESIS_SRC="${ROOT_DIR}/genesis/${NETWORK}/genesis_epoch0.bin"
 GENESIS_DST="${DATA_DIR}/genesis_epoch0.bin"
 GENESIS_HASH_HEX=""
+BOOTSTRAP_PEERS=""
 
 LIBOQS_SRC_DIR="${ROOT_DIR}/liboqs"
 LIBOQS_BUILD_DIR="${LIBOQS_SRC_DIR}/build"
@@ -30,6 +32,28 @@ LIBOQS_PC_DIR="${LIBOQS_INSTALL_DIR}/lib/pkgconfig"
 LIBOQS_LIB_DIR="${LIBOQS_INSTALL_DIR}/lib"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 1; }; }
+
+load_bootstrap_peers() {
+  local peers=()
+  local line=""
+  if [ -f "${PEERS_FILE}" ]; then
+    while IFS= read -r line || [ -n "${line}" ]; do
+      line="${line%%#*}"
+      line="$(echo "${line}" | tr -d '[:space:]')"
+      [ -z "${line}" ] && continue
+      [[ "${line}" == *:* ]] || continue
+      peers+=("${line}")
+    done < "${PEERS_FILE}"
+  fi
+  if [ -n "${SEED_PEER}" ]; then
+    peers+=("${SEED_PEER}")
+  fi
+  if [ "${#peers[@]}" -eq 0 ]; then
+    BOOTSTRAP_PEERS=""
+    return
+  fi
+  BOOTSTRAP_PEERS="$(printf '%s\n' "${peers[@]}" | awk '!seen[$0]++' | paste -sd, -)"
+}
 
 check_bind_port_available() {
   if command -v ss >/dev/null 2>&1; then
@@ -121,8 +145,8 @@ signer_privkey_hex=${SIGNER_PRIVKEY_HEX}
 genesis_hash_hex=${GENESIS_HASH_HEX}
 log_level=${LOG_LEVEL}
 CFG
-  if [ -n "${SEED_PEER}" ]; then
-    echo "peers=${SEED_PEER}" >> "${CONF_FILE}"
+  if [ -n "${BOOTSTRAP_PEERS}" ]; then
+    echo "peers=${BOOTSTRAP_PEERS}" >> "${CONF_FILE}"
   fi
   if [ -n "${PUBLIC_ENDPOINT}" ]; then
     echo "public_endpoint=${PUBLIC_ENDPOINT}" >> "${CONF_FILE}"
@@ -135,6 +159,7 @@ main() {
   write_env
   prepare_key
   prepare_genesis
+  load_bootstrap_peers
   write_config
   check_bind_port_available
   source "${ENV_FILE}"
@@ -145,6 +170,8 @@ main() {
   echo "key_file=${KEY_FILE}"
   echo "bind_port=${BIND_PORT}"
   [ -n "${SEED_PEER}" ] && echo "seed_peer=${SEED_PEER}" || echo "seed_peer=<none>"
+  echo "peers_file=${PEERS_FILE}"
+  [ -n "${BOOTSTRAP_PEERS}" ] && echo "bootstrap_peers=${BOOTSTRAP_PEERS}" || echo "bootstrap_peers=<none>"
   echo "data_dir=${DATA_DIR}"
   echo "cli_env_hint=run 'source ${ENV_FILE}' in any shell before using build/rpov2_cli"
   exec "${ROOT_DIR}/build/rpov2_node" "${CONF_FILE}"
