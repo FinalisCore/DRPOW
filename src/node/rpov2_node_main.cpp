@@ -1831,15 +1831,47 @@ int main(int argc, char** argv)
             if (it_existing != peer_fd_by_node_id.end() && it_existing->second != peer_fd)
             {
                 note_drop("hello_peer_id_collision");
-                // Expected during simultaneous outbound/inbound dialing.
-                // Keep current canonical connection and close duplicate quietly.
-                const uint64_t hold_ms = now_ms() + 15000ULL;
+                const int existing_fd = it_existing->second;
+                const std::string existing_ep = reactor.PeerEndpoint(existing_fd);
+                const std::string incoming_ep = reactor.PeerEndpoint(peer_fd);
+
+                // Deterministic tie-break for dual legs to the same peer-id:
+                // prefer lexicographically smaller endpoint; tie-break on lower fd.
+                // This avoids ambiguous keep/drop behavior across reconnect churn.
+                bool keep_incoming = false;
+                if (!incoming_ep.empty() && !existing_ep.empty())
+                {
+                    if (incoming_ep < existing_ep)
+                        keep_incoming = true;
+                    else if (incoming_ep == existing_ep && peer_fd < existing_fd)
+                        keep_incoming = true;
+                }
+                else if (!incoming_ep.empty() && existing_ep.empty())
+                {
+                    keep_incoming = true;
+                }
+                else if (incoming_ep.empty() && existing_ep.empty() && peer_fd < existing_fd)
+                {
+                    keep_incoming = true;
+                }
+
+                const uint64_t hold_ms = now_ms() + 30000ULL;
                 duplicate_node_cooldown_until_ms[node_key] = hold_ms;
-                const std::string dup_ep = reactor.PeerEndpoint(peer_fd);
-                if (!dup_ep.empty())
-                    duplicate_endpoint_cooldown_until_ms[dup_ep] = hold_ms;
-                reactor.Disconnect(peer_fd);
-                return;
+                if (!incoming_ep.empty())
+                    duplicate_endpoint_cooldown_until_ms[incoming_ep] = hold_ms;
+                if (!existing_ep.empty())
+                    duplicate_endpoint_cooldown_until_ms[existing_ep] = hold_ms;
+
+                if (keep_incoming)
+                {
+                    peer_fd_by_node_id.erase(node_key);
+                    reactor.Disconnect(existing_fd);
+                }
+                else
+                {
+                    reactor.Disconnect(peer_fd);
+                    return;
+                }
             }
             peer_pending_node_id_by_fd[peer_fd] = remote_id;
             Bytes32 challenge;
@@ -2614,8 +2646,12 @@ int main(int argc, char** argv)
                    no_progress_sec);
         }
 
+        const bool have_peers = !peer_last_round.empty();
+        const bool is_synced_or_standalone =
+            (last_committed_round >= synced_last_round) &&
+            (!have_peers || synced_last_round > 0);
         if (cfg.autopropose != 0 &&
-            last_committed_round >= synced_last_round &&
+            is_synced_or_standalone &&
             (time(NULL) - last_autopropose_tick) >= dynamic_autopropose_interval_sec)
         {
             RoundBatch batch;
