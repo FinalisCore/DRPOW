@@ -430,7 +430,9 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
     if (epoch == 0 || epoch_length == 0 || max_validators == 0)
         return out;
 
-    const uint64_t kAdmissionLookbackEpochs = 4;
+    // Open competition mode: emphasize freshest work so active miners
+    // can enter validator set quickly.
+    const uint64_t kAdmissionLookbackEpochs = 1;
     const uint64_t latest_epoch = epoch - 1;
     struct MinerStats {
         uint64_t wins;
@@ -450,7 +452,7 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
             continue;
         }
 
-        // More recent eras get more weight (4,3,2,1 for lookback=4).
+        // More recent eras get more weight.
         const uint64_t era_weight = (kAdmissionLookbackEpochs - off);
         for (size_t i = 0; i < recs.size(); ++i)
         {
@@ -503,32 +505,26 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
     if (prev_epoch && !prev_epoch->validators.empty())
     {
         target_size = prev_epoch->validators.size();
-        // Deterministic growth: allow validator set to expand by +1 per epoch
-        // until max_validators is reached.
+        // Open growth: expand faster (+4/epoch) until max_validators.
         if (target_size < max_validators)
-            target_size += 1;
+        {
+            const size_t grow = 4;
+            target_size = std::min(max_validators, target_size + grow);
+        }
     }
     if (target_size > max_validators)
         target_size = max_validators;
     if (target_size == 0)
         target_size = 1;
 
-    // Admission hardening:
-    // - deterministic churn cap (max 1/3 newcomers per epoch, minimum 1)
-    // - incumbents with PoW activity keep priority
-    // - newcomers must prove stronger work concentration (>=2 wins when epoch has >=10 rounds)
-    const size_t prev_size = prev_epoch ? prev_epoch->validators.size() : 0;
-    size_t max_newcomers = 1;
-    if (prev_size > 0)
-    {
-        max_newcomers = prev_size / 3;
-        if (max_newcomers == 0)
-            max_newcomers = 1;
-    }
+    // Open competition admission:
+    // - allow full newcomer turnover when fresh miners are active
+    // - require only one recent win to qualify
+    size_t max_newcomers = target_size;
     if (max_newcomers > target_size)
         max_newcomers = target_size;
-    const uint64_t newcomer_min_wins_recent = epoch_length >= 10 ? 2 : 1;
-    const uint64_t incumbent_min_wins_total = epoch_length >= 10 ? 2 : 1;
+    const uint64_t newcomer_min_wins_recent = 1;
+    const uint64_t incumbent_min_wins_total = 1;
 
     size_t newcomers_added = 0;
     for (size_t i = 0; i < ranked.size() && out.size() < target_size; ++i)
