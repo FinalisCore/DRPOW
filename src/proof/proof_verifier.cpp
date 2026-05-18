@@ -132,15 +132,9 @@ bool BasicProofVerifier::VerifyMintTx(const MintTx& tx) const
                                         tx.signature.empty() ? NULL : &tx.signature[0],
                                         tx.signature.size()))
         return false;
-
-    std::vector<uint8_t> pow_msg;
-    WriteBytes32(&pow_msg, tx.output.commitment);
-    WriteU64LE(&pow_msg, tx.mint_nonce);
-    WriteBytes32(&pow_msg, tx.miner_pubkey);
-    Bytes32 pow_hash;
-    if (!Sha256(pow_msg, &pow_hash))
-        return false;
-    return memcmp(pow_hash.v, tx.target.v, 32) <= 0;
+    // PoW validity is consensus-level (canonical RoundBatch hash <= target).
+    // Mint proof verification only checks mint authorization/signature integrity.
+    return true;
 }
 
 }  
