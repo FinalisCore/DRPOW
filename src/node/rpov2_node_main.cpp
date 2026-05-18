@@ -1383,6 +1383,37 @@ int main(int argc, char** argv)
         }
         return false;
     };
+    std::function<bool(const Bytes32&, uint64_t)> IsPowEligibleForRound = [&](const Bytes32& validator_id, uint64_t round) {
+        if (round == 0)
+            return false;
+        // Deterministic "eligibility proof path":
+        // A node is considered PoW-eligible if it has at least one successful
+        // committed mint in the most recent admission window.
+        const uint64_t lookback = kRuntimeEpochLength;
+        const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
+        const size_t count = (size_t)(round - from_round);
+        if (count == 0)
+            return false;
+        std::vector<RoundCommitRecord> recs;
+        if (!store.ExportVerifiedCommitRecordsFromRound(from_round, count, &recs))
+            return false;
+        for (size_t i = 0; i < recs.size(); ++i)
+        {
+            MintTx mint;
+            size_t off = 0;
+            if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                      recs[i].consensus_proof.size(),
+                                      &off,
+                                      &mint) ||
+                off != recs[i].consensus_proof.size())
+            {
+                continue;
+            }
+            if (memcmp(mint.miner_pubkey.v, validator_id.v, 32) == 0)
+                return true;
+        }
+        return false;
+    };
 
     std::function<void()> TryCatchUpFromCache = [&]() {
         if (last_committed_round >= synced_last_round)
@@ -1683,6 +1714,9 @@ int main(int argc, char** argv)
         }
     };
     std::map<std::string, uint64_t> drop_counters;
+    uint64_t metric_handshake_kept_leg = 0;
+    uint64_t metric_handshake_dropped_leg = 0;
+    uint64_t metric_handshake_cooldown_hits = 0;
     uint64_t drop_summary_last_ms = now_ms();
     auto note_drop = [&](const char* reason) {
         if (!reason)
@@ -1699,6 +1733,16 @@ int main(int argc, char** argv)
             return;
         }
         std::string msg = "[NET] drop_summary";
+        {
+            char mbuf[192];
+            snprintf(mbuf,
+                     sizeof(mbuf),
+                     " kept_leg=%llu dropped_leg=%llu cooldown_hits=%llu",
+                     (unsigned long long)metric_handshake_kept_leg,
+                     (unsigned long long)metric_handshake_dropped_leg,
+                     (unsigned long long)metric_handshake_cooldown_hits);
+            msg += mbuf;
+        }
         for (std::map<std::string, uint64_t>::const_iterator it = drop_counters.begin();
              it != drop_counters.end(); ++it)
         {
@@ -1788,6 +1832,7 @@ int main(int argc, char** argv)
                 if (it_cd != duplicate_node_cooldown_until_ms.end() && it_cd->second > now_ms())
                 {
                     note_drop("hello_duplicate_cooldown");
+                    metric_handshake_cooldown_hits += 1;
                     reactor.Disconnect(peer_fd);
                     return;
                 }
@@ -1807,6 +1852,7 @@ int main(int argc, char** argv)
                 if (it_ep_cd != duplicate_endpoint_cooldown_until_ms.end() && it_ep_cd->second > now_ms())
                 {
                     note_drop("hello_duplicate_cooldown");
+                    metric_handshake_cooldown_hits += 1;
                     reactor.Disconnect(peer_fd);
                     return;
                 }
@@ -1864,11 +1910,14 @@ int main(int argc, char** argv)
 
                 if (keep_incoming)
                 {
+                    metric_handshake_kept_leg += 1;
+                    metric_handshake_dropped_leg += 1;
                     peer_fd_by_node_id.erase(node_key);
                     reactor.Disconnect(existing_fd);
                 }
                 else
                 {
+                    metric_handshake_dropped_leg += 1;
                     reactor.Disconnect(peer_fd);
                     return;
                 }
@@ -2365,7 +2414,7 @@ int main(int argc, char** argv)
                 printf("drop propose vote_build_failed\n");
                 return;
             }
-            if (!IsValidatorForRound(signer_id, batch.round))
+            if (!(IsValidatorForRound(signer_id, batch.round) || IsPowEligibleForRound(signer_id, batch.round)))
             {
                 printf("sync_only skip_vote round=%llu\n",
                        (unsigned long long)batch.round);
@@ -2417,7 +2466,8 @@ int main(int argc, char** argv)
                        (unsigned long long)vote.round);
                 return;
             }
-            if (!IsValidatorForRound(vote.validator_id, vote.round))
+            if (!(IsValidatorForRound(vote.validator_id, vote.round) ||
+                  IsPowEligibleForRound(vote.validator_id, vote.round)))
             {
                 printf("drop vote unauthorized_voter round=%llu\n",
                        (unsigned long long)vote.round);
@@ -2567,6 +2617,7 @@ int main(int argc, char** argv)
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] validator_set size=%zu\n", vals.size());
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
+    Logf(LOG_NORMAL, "[BOOT] joiner_mode=%d\n", cfg.joiner_mode);
     Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
     Logf(LOG_NORMAL, "[BOOT] commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
     Logf(LOG_NORMAL, "[BOOT] sync_tip round=%llu\n", (unsigned long long)synced_last_round);
@@ -2650,12 +2701,23 @@ int main(int argc, char** argv)
         const bool is_synced_or_standalone =
             (last_committed_round >= synced_last_round) &&
             (!have_peers || synced_last_round > 0);
+        const uint64_t target_round = last_committed_round + 1;
+        const bool proposer_eligible =
+            IsValidatorForRound(signer_id, target_round) ||
+            IsPowEligibleForRound(signer_id, target_round);
+        const bool joiner_admission_ok = (cfg.joiner_mode == 0) || proposer_eligible;
+        if (cfg.autopropose != 0 && !joiner_admission_ok)
+            Logf(LOG_DEBUG, "joiner_gate skip_autopropose round=%llu eligible=%d synced=%llu local=%llu\n",
+                 (unsigned long long)target_round,
+                 proposer_eligible ? 1 : 0,
+                 (unsigned long long)synced_last_round,
+                 (unsigned long long)last_committed_round);
         if (cfg.autopropose != 0 &&
             is_synced_or_standalone &&
+            joiner_admission_ok &&
             (time(NULL) - last_autopropose_tick) >= dynamic_autopropose_interval_sec)
         {
             RoundBatch batch;
-            const uint64_t target_round = last_committed_round + 1;
             if (!EnsureEpochTransitionForRound(target_round, "autopropose"))
             {
                 printf("drop autopropose epoch_transition_invalid round=%llu\n",
