@@ -99,34 +99,61 @@ static bool ComputeExpectedTargetForRound(const StateStore* state_store,
 {
     if (!state_store || !out_target || round == 0)
         return false;
+    const uint64_t epoch_len = policy.target_epoch_rounds == 0 ? 1 : policy.target_epoch_rounds;
+    const bool epoch_start = (round == 1) || (((round - 1) % epoch_len) == 0);
+    if (round == 1)
+    {
+        *out_target = policy.max_target;
+        return true;
+    }
+
+    if (!epoch_start)
+    {
+        std::vector<RoundCommitRecord> prev;
+        if (!state_store->ExportVerifiedCommitRecordsFromRound(round - 1, 1, &prev))
+            return false;
+        if (prev.size() != 1)
+            return false;
+        MintTx mint;
+        size_t off = 0;
+        if (!ParseMintTxCanonical(prev[0].consensus_proof.empty() ? NULL : &prev[0].consensus_proof[0],
+                                  prev[0].consensus_proof.size(),
+                                  &off,
+                                  &mint) ||
+            off != prev[0].consensus_proof.size())
+        {
+            return false;
+        }
+        *out_target = mint.target;
+        return true;
+    }
+
+    // Epoch boundary retarget: derive one target commitment from previous epoch only.
+    std::vector<RoundCommitRecord> recs;
+    const uint64_t from_round = round - epoch_len;
+    if (!state_store->ExportVerifiedCommitRecordsFromRound(from_round, (size_t)epoch_len, &recs))
+        return false;
+    if (recs.size() == 0)
+        return false;
 
     Bytes32 prev_target = policy.max_target;
     uint64_t observed_mints = 0;
-    if (round > 1)
+    for (size_t i = 0; i < recs.size(); ++i)
     {
-        const uint64_t window = policy.target_window_rounds == 0 ? 1 : policy.target_window_rounds;
-        const uint64_t from_round = (round > window) ? (round - window) : 1;
-        std::vector<RoundCommitRecord> recs;
-        if (!state_store->ExportVerifiedCommitRecordsFromRound(from_round, (size_t)window, &recs))
-            return false;
-        for (size_t i = 0; i < recs.size(); ++i)
+        MintTx mint;
+        size_t off = 0;
+        if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                  recs[i].consensus_proof.size(),
+                                  &off,
+                                  &mint) ||
+            off != recs[i].consensus_proof.size())
         {
-            MintTx mint;
-            size_t off = 0;
-            if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
-                                      recs[i].consensus_proof.size(),
-                                      &off,
-                                      &mint) ||
-                off != recs[i].consensus_proof.size())
-            {
-                return false;
-            }
-            prev_target = mint.target;
-            observed_mints += 1;
+            return false;
         }
+        prev_target = mint.target;
+        observed_mints += 1;
     }
-
-    const uint64_t expected_mints = policy.target_mints_per_window == 0 ? 1 : policy.target_mints_per_window;
+    const uint64_t expected_mints = policy.target_mints_per_window == 0 ? epoch_len : policy.target_mints_per_window;
     return NextPowTargetDeterministic(prev_target,
                                       observed_mints,
                                       expected_mints,

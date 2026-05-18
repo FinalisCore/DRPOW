@@ -94,10 +94,10 @@ EconomicsPolicy DefaultEconomicsPolicy()
     p.max_fee_per_spend = 0;
     memset(p.min_target.v, 0x00, 32);
     p.min_target.v[31] = 0x01;
-    // Default network PoW target:
-    // 0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+    // Default network PoW target (stricter floor than 0f...):
+    // 07ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
     memset(p.max_target.v, 0xff, 32);
-    p.max_target.v[0] = 0x0f;
+    p.max_target.v[0] = 0x07;
     p.initial_subsidy = 50 * kAtomicPerCoin;
     p.subsidy_floor = 1;  // tail emission floor in atomic units
     // Era-0 duration is 2 years. Each next era doubles in duration (2y,4y,8y,...).
@@ -106,8 +106,11 @@ EconomicsPolicy DefaultEconomicsPolicy()
     p.min_transfer_tax_ppm = 20000;       // 2%
     p.target_window_rounds = 10;
     p.target_mints_per_window = 10;
+    p.target_epoch_rounds = 10;
     p.target_adjust_up_ppm_limit = 2000000;
-    p.target_adjust_down_ppm_limit = 500000;
+    // Faster hardening when blocks are too frequent:
+    // allow up to 4x harder target per retarget step.
+    p.target_adjust_down_ppm_limit = 250000;
     p.genesis_bootstrap_rounds = 10;
     return p;
 }

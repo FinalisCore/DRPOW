@@ -3,6 +3,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -50,6 +51,14 @@ static void Logf(int level, const char* fmt, ...)
     va_start(ap, fmt);
     vprintf(fmt, ap);
     va_end(ap);
+}
+
+static uint64_t NowMonotonicMs()
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
 static bool HexTo32(const std::string& s, uint8_t out[32])
@@ -255,32 +264,58 @@ static bool ComputeExpectedTargetForRoundNode(const RegistryStateStore& store,
 {
     if (!out_target || round == 0)
         return false;
+    const uint64_t epoch_len = policy.target_epoch_rounds == 0 ? 1 : policy.target_epoch_rounds;
+    const bool epoch_start = (round == 1) || (((round - 1) % epoch_len) == 0);
+    if (round == 1)
+    {
+        *out_target = policy.max_target;
+        return true;
+    }
+    if (!epoch_start)
+    {
+        std::vector<RoundCommitRecord> prev;
+        if (!store.ExportVerifiedCommitRecordsFromRound(round - 1, 1, &prev))
+            return false;
+        if (prev.size() != 1)
+            return false;
+        MintTx mint;
+        size_t off = 0;
+        if (!ParseMintTxCanonical(prev[0].consensus_proof.empty() ? NULL : &prev[0].consensus_proof[0],
+                                  prev[0].consensus_proof.size(),
+                                  &off,
+                                  &mint) ||
+            off != prev[0].consensus_proof.size())
+        {
+            return false;
+        }
+        *out_target = mint.target;
+        return true;
+    }
+
     Bytes32 prev_target = policy.max_target;
     uint64_t observed_mints = 0;
-    if (round > 1)
+    std::vector<RoundCommitRecord> recs;
+    const uint64_t from_round = round - epoch_len;
+    if (!store.ExportVerifiedCommitRecordsFromRound(from_round, (size_t)epoch_len, &recs))
+        return false;
+    if (recs.size() == 0)
+        return false;
+    for (size_t i = 0; i < recs.size(); ++i)
     {
-        const uint64_t window = policy.target_window_rounds == 0 ? 1 : policy.target_window_rounds;
-        const uint64_t from_round = (round > window) ? (round - window) : 1;
-        std::vector<RoundCommitRecord> recs;
-        if (!store.ExportVerifiedCommitRecordsFromRound(from_round, (size_t)window, &recs))
-            return false;
-        for (size_t i = 0; i < recs.size(); ++i)
+        MintTx mint;
+        size_t off = 0;
+        if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                  recs[i].consensus_proof.size(),
+                                  &off,
+                                  &mint) ||
+            off != recs[i].consensus_proof.size())
         {
-            MintTx mint;
-            size_t off = 0;
-            if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
-                                      recs[i].consensus_proof.size(),
-                                      &off,
-                                      &mint) ||
-                off != recs[i].consensus_proof.size())
-            {
-                return false;
-            }
-            prev_target = mint.target;
-            observed_mints += 1;
+            return false;
         }
+        prev_target = mint.target;
+        observed_mints += 1;
     }
-    const uint64_t expected_mints = policy.target_mints_per_window == 0 ? 1 : policy.target_mints_per_window;
+    const uint64_t expected_mints = policy.target_mints_per_window == 0 ? epoch_len : policy.target_mints_per_window;
     return NextPowTargetDeterministic(prev_target,
                                       observed_mints,
                                       expected_mints,
@@ -2570,9 +2605,7 @@ int main(int argc, char** argv)
                 }
                 mint.target = expected_target;
                 memset(mint.output.range_proof.v, 0, 64);
-                mint.mint_nonce = (uint64_t)time(NULL);
                 mint.miner_pubkey = signer_id;
-                mint.signature = BuildMintSigLocal(*crypto, signer_priv, mint);
                 batch.mints.push_back(mint);
                 Logf(LOG_NORMAL, "[AUTO] prepare round=%llu subsidy=%llu tax_ppm=%llu burn_refill=%llu reserve=%llu mint=%llu target=%s miner=%s\n",
                        (unsigned long long)batch.round,
@@ -2583,10 +2616,46 @@ int main(int argc, char** argv)
                        (unsigned long long)mint.output.value,
                        Hex32(mint.target).c_str(),
                        Hex32(mint.miner_pubkey).c_str());
-                if (!BuildBatchHashLocal(batch, &batch.batch_hash))
+
+                // Bitcoin-like loop: try many nonces each interval, stop when target is met
+                // or when we hit bounded CPU/work limits for this tick.
+                const uint64_t pow_start_ms = NowMonotonicMs();
+                const uint64_t pow_time_budget_ms = 1500; // keep node responsive
+                const uint64_t pow_max_attempts = 200000; // hard cap per interval
+                uint64_t pow_attempts = 0;
+                bool pow_found = false;
+                uint64_t nonce_cursor = ((uint64_t)time(NULL) << 32) ^ ((uint64_t)getpid() << 16) ^ batch.round;
+                while (pow_attempts < pow_max_attempts)
                 {
-                    Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=batch_hash reason=build_batch_hash_failed\n",
-                           (unsigned long long)batch.round);
+                    const uint64_t now_ms = NowMonotonicMs();
+                    if (now_ms > pow_start_ms && (now_ms - pow_start_ms) >= pow_time_budget_ms)
+                        break;
+
+                    MintTx& work_mint = batch.mints[0];
+                    work_mint.mint_nonce = nonce_cursor++;
+                    work_mint.signature = BuildMintSigLocal(*crypto, signer_priv, work_mint);
+                    if (!BuildBatchHashLocal(batch, &batch.batch_hash))
+                    {
+                        Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=batch_hash reason=build_batch_hash_failed\n",
+                               (unsigned long long)batch.round);
+                        break;
+                    }
+                    ++pow_attempts;
+                    if (memcmp(batch.batch_hash.v, work_mint.target.v, 32) <= 0)
+                    {
+                        pow_found = true;
+                        break;
+                    }
+                }
+                const uint64_t pow_elapsed_ms = (NowMonotonicMs() >= pow_start_ms) ? (NowMonotonicMs() - pow_start_ms) : 0;
+                const uint64_t pow_hps = (pow_elapsed_ms > 0) ? ((pow_attempts * 1000ULL) / pow_elapsed_ms) : 0;
+                if (!pow_found)
+                {
+                    Logf(LOG_NORMAL, "[POW] round=%llu status=not_found attempts=%llu elapsed_ms=%llu rate_hps=%llu\n",
+                           (unsigned long long)batch.round,
+                           (unsigned long long)pow_attempts,
+                           (unsigned long long)pow_elapsed_ms,
+                           (unsigned long long)pow_hps);
                     for (size_t i = 0; i < drained_spends.size(); ++i)
                     {
                         std::string readd_err;
@@ -2595,6 +2664,13 @@ int main(int argc, char** argv)
                     last_autopropose_tick = time(NULL);
                     continue;
                 }
+                Logf(LOG_NORMAL, "[POW] round=%llu status=found attempts=%llu elapsed_ms=%llu rate_hps=%llu nonce=%llu hash=%s\n",
+                       (unsigned long long)batch.round,
+                       (unsigned long long)pow_attempts,
+                       (unsigned long long)pow_elapsed_ms,
+                       (unsigned long long)pow_hps,
+                       (unsigned long long)batch.mints[0].mint_nonce,
+                       Hex32(batch.batch_hash).c_str());
                 if (!engine.Propose(batch))
                 {
                     Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=propose code=%d reason=%s\n",
