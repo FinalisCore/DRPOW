@@ -307,6 +307,17 @@ static uint64_t SumBatchMintValue(const RoundBatch& batch)
     return s;
 }
 
+static uint64_t ExpectedMintBudgetForRound(const RegistryStateStore& store,
+                                           uint64_t round,
+                                           const EconomicsPolicy& economics_policy)
+{
+    uint64_t expected = MintSubsidyForRound(round, economics_policy);
+    uint64_t reserve_budget = 0;
+    if (store.ReadMintBudget(&reserve_budget) && reserve_budget < expected)
+        expected = reserve_budget;
+    return expected;
+}
+
 static uint64_t SumBatchFees(const RoundBatch& batch)
 {
     uint64_t s = 0;
@@ -2550,6 +2561,20 @@ int main(int argc, char** argv)
                 printf("drop commit qc_invalid\n");
                 return;
             }
+            const uint64_t minted_precheck = SumBatchMintValue(batch);
+            const uint64_t expected_mint_precheck = ExpectedMintBudgetForRound(store, batch.round, economics_policy);
+            if (minted_precheck != expected_mint_precheck)
+            {
+                metric_commit_rejects += 1;
+                note_reject("commit_mint_amount_mismatch");
+                printf("drop commit mint_amount_mismatch round=%llu minted=%llu expected=%llu mints=%zu batch=%s\n",
+                       (unsigned long long)batch.round,
+                       (unsigned long long)minted_precheck,
+                       (unsigned long long)expected_mint_precheck,
+                       batch.mints.size(),
+                       Hex32(batch.batch_hash).c_str());
+                return;
+            }
             if (!engine.Commit(batch, qc))
             {
                 metric_commit_rejects += 1;
@@ -2721,6 +2746,21 @@ int main(int argc, char** argv)
         if (local_supermajority && batch.round > last_committed_round)
         {
             qc_gate_last_votes.erase(k);
+            const uint64_t minted_precheck = SumBatchMintValue(batch);
+            const uint64_t expected_mint_precheck = ExpectedMintBudgetForRound(store, batch.round, economics_policy);
+            if (minted_precheck != expected_mint_precheck)
+            {
+                metric_commit_rejects += 1;
+                note_reject("local_commit_mint_amount_mismatch");
+                Logf(LOG_NORMAL,
+                     "[COMMIT][REJECT] round=%llu reason=mint_amount_mismatch minted=%llu expected=%llu mints=%zu batch=%s\n",
+                     (unsigned long long)batch.round,
+                     (unsigned long long)minted_precheck,
+                     (unsigned long long)expected_mint_precheck,
+                     batch.mints.size(),
+                     Hex32(batch.batch_hash).c_str());
+                return;
+            }
             if (engine.Commit(batch, local_qc))
             {
                 metric_commit_accepts += 1;
@@ -2944,7 +2984,6 @@ int main(int argc, char** argv)
                 const uint64_t pow_start_ms = NowMonotonicMs();
                 // With stricter targets we allow a few seconds of local search per tick.
                 const uint64_t pow_time_budget_ms = 6000; // keep node responsive while allowing deeper search
-                const uint64_t pow_max_attempts = 2000000; // hard cap per interval
                 uint64_t pow_attempts = 0;
                 bool pow_found = false;
                 uint64_t nonce_cursor = ((uint64_t)time(NULL) << 32) ^ ((uint64_t)getpid() << 16) ^ batch.round;
@@ -2964,7 +3003,7 @@ int main(int argc, char** argv)
                 Bytes32 proposer_target_half;
                 HalveTargetLocal(expected_target, &proposer_target_half);
                 Bytes32 proposer_pow_hash;
-                while (pow_attempts < pow_max_attempts)
+                while (true)
                 {
                     const uint64_t now_ms = NowMonotonicMs();
                     if (now_ms > pow_start_ms && (now_ms - pow_start_ms) >= pow_time_budget_ms)
