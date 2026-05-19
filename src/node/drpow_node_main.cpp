@@ -2831,6 +2831,8 @@ int main(int argc, char** argv)
     time_t last_log_rotate_tick = start;
     int dynamic_autopropose_interval_sec = cfg.autopropose_interval_sec > 0 ? cfg.autopropose_interval_sec : 1;
     size_t dynamic_max_spends_per_round = economics_policy.max_spends_per_round;
+    const uint64_t kPowBaseBudgetMs = 6000ULL;
+    uint64_t dynamic_pow_time_budget_ms = kPowBaseBudgetMs;
     bool sync_first_prev = false;
     while (true)
     {
@@ -2982,8 +2984,9 @@ int main(int argc, char** argv)
                 // Bitcoin-like loop: try many nonces each interval, stop when target is met
                 // or when we hit bounded CPU/work limits for this tick.
                 const uint64_t pow_start_ms = NowMonotonicMs();
-                // With stricter targets we allow a few seconds of local search per tick.
-                const uint64_t pow_time_budget_ms = 6000; // keep node responsive while allowing deeper search
+                // Adaptive budget:
+                // base=6000ms, on not_found => double, on found => reset to base.
+                const uint64_t pow_time_budget_ms = dynamic_pow_time_budget_ms;
                 uint64_t pow_attempts = 0;
                 bool pow_found = false;
                 uint64_t nonce_cursor = ((uint64_t)time(NULL) << 32) ^ ((uint64_t)getpid() << 16) ^ batch.round;
@@ -3040,6 +3043,8 @@ int main(int argc, char** argv)
                            (unsigned long long)pow_attempts,
                            (unsigned long long)pow_elapsed_ms,
                            (unsigned long long)pow_hps);
+                    if (dynamic_pow_time_budget_ms <= (UINT64_MAX / 2ULL))
+                        dynamic_pow_time_budget_ms *= 2ULL;
                     for (size_t i = 0; i < drained_spends.size(); ++i)
                     {
                         std::string readd_err;
@@ -3055,6 +3060,7 @@ int main(int argc, char** argv)
                        (unsigned long long)pow_hps,
                        (unsigned long long)batch.mints[0].mint_nonce,
                        Hex32(proposer_pow_hash).c_str());
+                dynamic_pow_time_budget_ms = kPowBaseBudgetMs;
                 if (!engine.Propose(batch))
                 {
                     Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=propose code=%d reason=%s\n",
