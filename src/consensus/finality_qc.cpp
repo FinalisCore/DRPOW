@@ -115,7 +115,20 @@ bool HasSupermajorityPowerTyped(const ValidatorEpoch& epoch,
     if (pow_recent_vote_weight == 0)
         return false;
     const uint64_t validator_total = TotalVotingPower(epoch);
-    const uint64_t pow_total = (uint64_t)pow_recent_ids.size() * pow_recent_vote_weight;
+    // Prevent denominator inflation: identities already in the validator set
+    // must not be counted again in the PoW-recent bucket.
+    uint64_t overlap_count = 0;
+    for (size_t i = 0; i < epoch.validators.size(); ++i)
+    {
+        const std::string id((const char*)epoch.validators[i].validator_id.v, 32);
+        if (pow_recent_ids.count(id))
+            overlap_count += 1;
+    }
+    const uint64_t pow_unique_count =
+        ((uint64_t)pow_recent_ids.size() > overlap_count)
+            ? ((uint64_t)pow_recent_ids.size() - overlap_count)
+            : 0;
+    const uint64_t pow_total = pow_unique_count * pow_recent_vote_weight;
     const uint64_t total = validator_total + pow_total;
     if (total == 0)
         return false;
