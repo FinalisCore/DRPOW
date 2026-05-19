@@ -98,7 +98,7 @@ EconomicsPolicy DefaultEconomicsPolicy()
     // Default network PoW target (stricter floor than 0f...):
     // 07ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
     memset(p.max_target.v, 0xff, 32);
-    p.max_target.v[0] = 0x0077;
+    p.max_target.v[0] = 0x00100;
     p.initial_subsidy = 50 * kAtomicPerCoin;
     p.subsidy_floor = 1;  // tail emission floor in atomic units
     // Era-0 duration is 2 years. Each next era doubles in duration (2y,4y,8y,...).
