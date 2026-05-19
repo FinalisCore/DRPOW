@@ -914,6 +914,9 @@ int main(int argc, char** argv)
     std::map<std::string, std::vector<Vote> > known_votes;
     std::map<std::string, std::set<std::string> > known_vote_ids;
     std::map<std::string, size_t> qc_gate_last_votes;
+    std::map<uint64_t, Bytes32> local_vote_by_round;
+    std::map<std::string, Bytes32> remote_vote_target_by_round_voter;
+    std::map<uint64_t, Bytes32> committed_batch_by_round;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     const uint64_t startup_registry_bytes = FileSizeBytes(registry);
     const uint64_t startup_commitlog_bytes = FileSizeBytes(commitlog);
@@ -1111,6 +1114,39 @@ int main(int argc, char** argv)
             qc_gate_last_votes.erase(k);
         }
     };
+    auto RoundVoterKey = [&](uint64_t round, const Bytes32& voter) {
+        std::string key((const char*)&round, sizeof(round));
+        key.append((const char*)voter.v, 32);
+        return key;
+    };
+    auto EnsureLocalVoteForRound = [&](uint64_t round, const Bytes32& batch_hash) -> bool {
+        std::map<uint64_t, Bytes32>::const_iterator it = local_vote_by_round.find(round);
+        if (it == local_vote_by_round.end())
+        {
+            local_vote_by_round[round] = batch_hash;
+            return true;
+        }
+        return memcmp(it->second.v, batch_hash.v, 32) == 0;
+    };
+    auto RecordRemoteVoteTarget = [&](uint64_t round, const Bytes32& voter, const Bytes32& batch_hash) -> bool {
+        const std::string key = RoundVoterKey(round, voter);
+        std::map<std::string, Bytes32>::const_iterator it = remote_vote_target_by_round_voter.find(key);
+        if (it == remote_vote_target_by_round_voter.end())
+        {
+            remote_vote_target_by_round_voter[key] = batch_hash;
+            return true;
+        }
+        return memcmp(it->second.v, batch_hash.v, 32) == 0;
+    };
+    auto IsCommitConflict = [&](uint64_t round, const Bytes32& batch_hash) -> bool {
+        std::map<uint64_t, Bytes32>::const_iterator it = committed_batch_by_round.find(round);
+        if (it == committed_batch_by_round.end())
+            return false;
+        return memcmp(it->second.v, batch_hash.v, 32) != 0;
+    };
+    auto RememberCommitTarget = [&](uint64_t round, const Bytes32& batch_hash) {
+        committed_batch_by_round[round] = batch_hash;
+    };
     std::function<void()> TryCatchUpFromCache = [&]() {
         if (last_committed_round >= synced_last_round)
             return;
@@ -1195,6 +1231,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
+            RememberCommitTarget(batch.round, batch.batch_hash);
             AdvanceSyncedTipFromCommit(last_committed_round);
             PurgeCommittedPending(last_committed_round);
             applied++;
@@ -2214,6 +2251,14 @@ int main(int argc, char** argv)
                        (unsigned long long)last_committed_round);
                 return;
             }
+            if (IsCommitConflict(batch.round, batch.batch_hash))
+            {
+                metric_propose_rejects += 1;
+                note_reject("propose_round_conflict");
+                printf("drop propose round_conflict round=%llu\n",
+                       (unsigned long long)batch.round);
+                return;
+            }
             if (batch.mints.empty())
             {
                 metric_propose_rejects += 1;
@@ -2280,6 +2325,14 @@ int main(int argc, char** argv)
                 printf("drop propose vote_sign_failed\n");
                 return;
             }
+            if (!EnsureLocalVoteForRound(batch.round, batch.batch_hash))
+            {
+                metric_vote_rejects += 1;
+                note_reject("vote_equivocation_local_blocked");
+                printf("drop propose equivocation_local_blocked round=%llu\n",
+                       (unsigned long long)batch.round);
+                return;
+            }
             metric_vote_accepts += 1;
             {
                 const std::string k = Bytes32Key(vote.batch_hash);
@@ -2322,6 +2375,15 @@ int main(int argc, char** argv)
                 printf("drop vote stale round=%llu last=%llu\n",
                        (unsigned long long)vote.round,
                        (unsigned long long)last_committed_round);
+                return;
+            }
+            if (!RecordRemoteVoteTarget(vote.round, vote.validator_id, vote.batch_hash))
+            {
+                metric_vote_rejects += 1;
+                note_reject("vote_equivocation_remote");
+                printf("drop vote equivocation_remote round=%llu voter=%s\n",
+                       (unsigned long long)vote.round,
+                       Hex32(vote.validator_id).c_str());
                 return;
             }
             if (!vote_verifier.VerifyVote(vote))
@@ -2450,6 +2512,14 @@ int main(int argc, char** argv)
                        (unsigned long long)last_committed_round);
                 return;
             }
+            if (IsCommitConflict(batch.round, batch.batch_hash))
+            {
+                metric_commit_rejects += 1;
+                note_reject("commit_round_conflict");
+                printf("drop commit round_conflict round=%llu\n",
+                       (unsigned long long)batch.round);
+                return;
+            }
             if (qc.round != batch.round || memcmp(qc.batch_hash.v, batch.batch_hash.v, 32) != 0)
             {
                 metric_commit_rejects += 1;
@@ -2493,6 +2563,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
+            RememberCommitTarget(batch.round, batch.batch_hash);
             AdvanceSyncedTipFromCommit(last_committed_round);
             PurgeCommittedPending(last_committed_round);
             const uint64_t minted = SumBatchMintValue(batch);
@@ -2823,6 +2894,14 @@ int main(int argc, char** argv)
                 Vote vote;
                 if (engine.ValidateAndVote(batch, &vote))
                 {
+                    if (!EnsureLocalVoteForRound(batch.round, batch.batch_hash))
+                    {
+                        metric_vote_rejects += 1;
+                        note_reject("vote_equivocation_local_blocked");
+                        printf("drop autopropose_vote equivocation_local_blocked round=%llu\n",
+                               (unsigned long long)batch.round);
+                        continue;
+                    }
                     {
                         vote.validator_id = signer_id;
                         vote.eligibility_type = VOTE_ELIGIBILITY_POW_RECENT;
@@ -2886,6 +2965,7 @@ int main(int argc, char** argv)
                                     last_committed_round = batch.round;
                                     last_progress_round = last_committed_round;
                                     last_progress_time = time(NULL);
+                                    RememberCommitTarget(batch.round, batch.batch_hash);
                                     AdvanceSyncedTipFromCommit(last_committed_round);
                                     PurgeCommittedPending(last_committed_round);
                                     const uint64_t minted = SumBatchMintValue(batch);
