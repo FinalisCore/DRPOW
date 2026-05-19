@@ -19,18 +19,26 @@ Hard genesis enforcement:
 - node startup verifies `sha256(data_dir/genesis_epoch0.bin) == genesis_hash_hex`,
 - startup fails on mismatch or missing genesis file (`genesis_hash_mismatch`).
 
-Start testnet seed:
+Start testnet:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
-BIND_PORT=29101 PUBLIC_ENDPOINT=192.168.0.104:29101 ./scripts/start_testnet.sh
+AUTOPROPOSE=1 \
+BIND_PORT=29101 \
+PUBLIC_ENDPOINT=192.168.0.104:29101 \
+SEED_PEER= \
+./scripts/start_testnet.sh
 ```
 
-Start testnet follower:
+Start testnet:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
-BIND_PORT=29102 SEED_PEER=192.168.0.104:29101 ./scripts/start_testnet.sh
+AUTOPROPOSE=1 \
+BIND_PORT=29102 \
+PUBLIC_ENDPOINT=192.168.0.106:29102 \
+SEED_PEER=192.168.0.104:29101 \
+./scripts/start_testnet.sh
 ```
 
 Start mainnet seed:
