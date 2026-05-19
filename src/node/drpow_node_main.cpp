@@ -1290,10 +1290,14 @@ int main(int argc, char** argv)
         return false;
     };
 
+    // Strict fixed-peer mode: only configured/bootstrap peers are used.
+    // Disable runtime peer discovery to avoid endpoint churn from ephemeral ports.
+    const bool kFixedPeerMode = true;
     const std::string discovered_peers_file = cfg.data_dir + "/discovered_peers.txt";
     const uint64_t kPeerCacheKeepRounds = 20;
     std::vector<PeerCacheRecord> persisted_records;
-    (void)LoadPeerCacheRecords(discovered_peers_file, &persisted_records);
+    if (!kFixedPeerMode)
+        (void)LoadPeerCacheRecords(discovered_peers_file, &persisted_records);
     const size_t peer_cache_before_startup = persisted_records.size();
     CompactPeerCacheRecords(&persisted_records, last_committed_round, kPeerCacheKeepRounds);
     const size_t peer_cache_after_startup = persisted_records.size();
@@ -1303,7 +1307,8 @@ int main(int argc, char** argv)
            peer_cache_before_startup,
            peer_cache_after_startup,
            (unsigned long long)peer_cache_cutoff_startup);
-    (void)SavePeerCacheRecords(discovered_peers_file, persisted_records);
+    if (!kFixedPeerMode)
+        (void)SavePeerCacheRecords(discovered_peers_file, persisted_records);
     std::set<std::string> bootstrap_peers(cfg.peers.begin(), cfg.peers.end());
     std::map<std::string, uint64_t> peer_last_seen_round;
     for (size_t i = 0; i < persisted_records.size(); ++i)
@@ -1317,6 +1322,8 @@ int main(int argc, char** argv)
     P2PReactor reactor(cfg.bind_port, all_bootstrap, signer_id);
 
     std::function<void()> PersistKnownPeers = [&]() {
+        if (kFixedPeerMode)
+            return;
         std::vector<std::string> peers = reactor.KnownPeers();
         std::vector<PeerCacheRecord> clean;
         for (size_t i = 0; i < peers.size(); ++i)
@@ -1941,7 +1948,7 @@ int main(int argc, char** argv)
                  ep.empty() ? "<unknown>" : ep.c_str(),
                  DrpowParamsVersionTag(),
                  Hex32(params_hash).c_str());
-            if (IsValidEndpoint(ep))
+            if (!kFixedPeerMode && IsValidEndpoint(ep))
             {
                 reactor.AddPeer(ep);
                 peer_last_seen_round[ep] = last_committed_round;
@@ -2031,6 +2038,11 @@ int main(int argc, char** argv)
                                        signature.size()))
             {
                 printf("drop peer_list sig_invalid\n");
+                return;
+            }
+            if (kFixedPeerMode)
+            {
+                // Ignore dynamic peer gossip in fixed-peer mode.
                 return;
             }
             size_t added = 0;
@@ -2308,6 +2320,12 @@ int main(int argc, char** argv)
                 printf("drop propose stale round=%llu last=%llu\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)last_committed_round);
+                return;
+            }
+            const std::string incoming_batch_key = Bytes32Key(batch.batch_hash);
+            if (known_batches.count(incoming_batch_key))
+            {
+                // Duplicate proposal payload; ignore.
                 return;
             }
             if (IsCommitConflict(batch.round, batch.batch_hash))
@@ -2601,6 +2619,7 @@ int main(int argc, char** argv)
     }
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] voting_mode=pow_only\n");
+    Logf(LOG_NORMAL, "[BOOT] peer_mode=fixed\n");
     Logf(LOG_NORMAL,
          "[BOOT] pow_target_prefix_bytes=%d max_target=%s\n",
          cfg.pow_target_prefix_bytes,
