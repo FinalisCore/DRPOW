@@ -18,10 +18,15 @@ enum VoteEligibilityType : uint8_t {
 };
 
 struct Vote {
-    uint64_t round;
-    Bytes32 batch_hash;
-    Bytes32 validator_id;
-    uint8_t eligibility_type;
+    uint64_t round = 0;
+    Bytes32 batch_hash = Bytes32();
+    Bytes32 validator_id = Bytes32();
+    uint8_t eligibility_type = VOTE_ELIGIBILITY_VALIDATOR_SET;
+    // Optional PoW proof metadata for vote diagnostics and future admission rules.
+    uint8_t pow_proof_present = 0;
+    uint64_t pow_nonce = 0;
+    Bytes32 pow_target = Bytes32();
+    Bytes32 pow_hash = Bytes32();
     std::vector<uint8_t> signature;
 };
 
@@ -44,6 +49,10 @@ bool HasSupermajorityPowerTyped(const ValidatorEpoch& epoch,
                                 const QuorumCertificate& qc,
                                 const std::set<std::string>& pow_recent_ids,
                                 uint64_t pow_recent_vote_weight);
+void BuildVoteSigningMessageV1(const Vote& vote, std::vector<uint8_t>* out);
+void BuildVoteSigningMessageV2(const Vote& vote, std::vector<uint8_t>* out);
+bool VerifyVotePowFields(const Vote& vote, std::string* reason);
+bool VotePowHashMeetsTarget(const Bytes32& pow_hash, const Bytes32& pow_target);
 
 class VoteVerifier {
 public:

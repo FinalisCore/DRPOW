@@ -249,6 +249,10 @@ bool SerializeVotePayload(const Vote& vote, std::vector<uint8_t>* out)
     WriteBytes32(out, vote.batch_hash);
     WriteBytes32(out, vote.validator_id);
     out->push_back(vote.eligibility_type);
+    out->push_back(vote.pow_proof_present ? 1u : 0u);
+    WriteU64LE(out, vote.pow_nonce);
+    WriteBytes32(out, vote.pow_target);
+    WriteBytes32(out, vote.pow_hash);
     WriteU64LE(out, (uint64_t)vote.signature.size());
     out->insert(out->end(), vote.signature.begin(), vote.signature.end());
     return true;
@@ -271,6 +275,17 @@ bool ParseVotePayload(const std::vector<uint8_t>& in, Vote* out)
         return false;
     v.eligibility_type = in[off++];
     if (!VoteEligibilityTypeValid(v.eligibility_type))
+        return false;
+    if (off + 1 > in.size())
+        return false;
+    v.pow_proof_present = in[off++];
+    if (v.pow_proof_present > 1)
+        return false;
+    if (!ReadU64LELocal(&in[0], in.size(), &off, &v.pow_nonce))
+        return false;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, v.pow_target.v, 32))
+        return false;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, v.pow_hash.v, 32))
         return false;
     if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))
         return false;
@@ -296,6 +311,10 @@ static bool SerializeQcLocal(const QuorumCertificate& qc, std::vector<uint8_t>* 
         WriteBytes32(out, v.batch_hash);
         WriteBytes32(out, v.validator_id);
         out->push_back(v.eligibility_type);
+        out->push_back(v.pow_proof_present ? 1u : 0u);
+        WriteU64LE(out, v.pow_nonce);
+        WriteBytes32(out, v.pow_target);
+        WriteBytes32(out, v.pow_hash);
         WriteU64LE(out, (uint64_t)v.signature.size());
         out->insert(out->end(), v.signature.begin(), v.signature.end());
     }
@@ -330,6 +349,17 @@ static bool ParseQcLocal(const uint8_t* data, size_t n, size_t* off, QuorumCerti
             return false;
         qc.votes[i].eligibility_type = data[(*off)++];
         if (!VoteEligibilityTypeValid(qc.votes[i].eligibility_type))
+            return false;
+        if (*off + 1 > n)
+            return false;
+        qc.votes[i].pow_proof_present = data[(*off)++];
+        if (qc.votes[i].pow_proof_present > 1)
+            return false;
+        if (!ReadU64LELocal(data, n, off, &qc.votes[i].pow_nonce))
+            return false;
+        if (!ReadBytesLocal(data, n, off, qc.votes[i].pow_target.v, 32))
+            return false;
+        if (!ReadBytesLocal(data, n, off, qc.votes[i].pow_hash.v, 32))
             return false;
         if (!ReadVecLocal(data, n, off, &sig))
             return false;

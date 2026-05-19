@@ -2858,11 +2858,12 @@ int main(int argc, char** argv)
             }
             vote.validator_id = signer_id;
             vote.eligibility_type = local_vote_type;
+            vote.pow_proof_present = 0;
+            vote.pow_nonce = 0;
+            vote.pow_target = Bytes32();
+            vote.pow_hash = Bytes32();
             std::vector<uint8_t> m;
-            WriteU64LE(&m, vote.round);
-            m.insert(m.end(), vote.batch_hash.v, vote.batch_hash.v + 32);
-            m.insert(m.end(), vote.validator_id.v, vote.validator_id.v + 32);
-            m.push_back(vote.eligibility_type);
+            BuildVoteSigningMessageV2(vote, &m);
             if (!crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))
             {
                 metric_vote_rejects += 1;
@@ -2950,6 +2951,31 @@ int main(int argc, char** argv)
                 note_reject("vote_bad_sig");
                 printf("drop vote bad_sig\n");
                 return;
+            }
+            std::string vote_pow_reason;
+            const bool vote_pow_ok = VerifyVotePowFields(vote, &vote_pow_reason);
+            if (!vote_pow_ok)
+            {
+                Logf(LOG_NORMAL,
+                     "[VOTE][POW] round=%llu voter=%s status=invalid reason=%s present=%u nonce=%llu hash=%s target=%s\n",
+                     (unsigned long long)vote.round,
+                     Hex32(vote.validator_id).c_str(),
+                     vote_pow_reason.c_str(),
+                     (unsigned)vote.pow_proof_present,
+                     (unsigned long long)vote.pow_nonce,
+                     Hex32(vote.pow_hash).c_str(),
+                     Hex32(vote.pow_target).c_str());
+            }
+            else if (vote.pow_proof_present)
+            {
+                Logf(LOG_DEBUG,
+                     "[VOTE][POW] round=%llu voter=%s status=valid reason=%s nonce=%llu hash=%s target=%s\n",
+                     (unsigned long long)vote.round,
+                     Hex32(vote.validator_id).c_str(),
+                     vote_pow_reason.c_str(),
+                     (unsigned long long)vote.pow_nonce,
+                     Hex32(vote.pow_hash).c_str(),
+                     Hex32(vote.pow_target).c_str());
             }
             const std::string k = Bytes32Key(vote.batch_hash);
             std::map<std::string, RoundBatch>::const_iterator itb = known_batches.find(k);
@@ -3463,11 +3489,12 @@ int main(int argc, char** argv)
                     {
                         vote.validator_id = signer_id;
                         vote.eligibility_type = local_vote_type;
+                        vote.pow_proof_present = 0;
+                        vote.pow_nonce = 0;
+                        vote.pow_target = Bytes32();
+                        vote.pow_hash = Bytes32();
                         std::vector<uint8_t> m;
-                        WriteU64LE(&m, vote.round);
-                        m.insert(m.end(), vote.batch_hash.v, vote.batch_hash.v + 32);
-                        m.insert(m.end(), vote.validator_id.v, vote.validator_id.v + 32);
-                        m.push_back(vote.eligibility_type);
+                        BuildVoteSigningMessageV2(vote, &m);
                         if (crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))
                         {
                             const std::string k = Bytes32Key(vote.batch_hash);
