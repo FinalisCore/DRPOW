@@ -41,6 +41,10 @@ public:
 std::unique_ptr<CryptoBackend> CreateCryptoBackendByName(const std::string& name);
 std::unique_ptr<CryptoBackend> CreateCryptoBackendFromEnv();
 bool HasStandardPqcBackend();
+bool GetPqcKeyDbSelfCheck(std::string* out_path,
+                          bool* out_parent_owner_only,
+                          bool* out_file_exists,
+                          bool* out_file_owner_only);
 
 }  
 

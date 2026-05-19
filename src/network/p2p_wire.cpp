@@ -192,6 +192,7 @@ bool SerializeRoundBatchPayload(const RoundBatch& batch, std::vector<uint8_t>* o
         return false;
     out->clear();
     WriteU64LE(out, batch.round);
+    WriteBytes32(out, batch.params_hash);
     WriteBytes32(out, batch.batch_hash);
     WriteU64LE(out, (uint64_t)batch.spends.size());
     for (size_t i = 0; i < batch.spends.size(); ++i)
@@ -210,6 +211,8 @@ bool ParseRoundBatchPayload(const std::vector<uint8_t>& in, RoundBatch* out)
     RoundBatch batch;
     uint64_t spends_n = 0, mints_n = 0;
     if (!ReadU64LELocal(&in[0], in.size(), &off, &batch.round))
+        return false;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, batch.params_hash.v, 32))
         return false;
     if (!ReadBytesLocal(&in[0], in.size(), &off, batch.batch_hash.v, 32))
         return false;
@@ -360,6 +363,8 @@ bool ParseCommitPayload(const std::vector<uint8_t>& in, RoundBatch* batch, Quoru
     size_t off = 0;
     uint64_t spends_n = 0, mints_n = 0, qc_sz = 0;
     if (!ReadU64LELocal(&in[0], in.size(), &off, &b.round))
+        return false;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, b.params_hash.v, 32))
         return false;
     if (!ReadBytesLocal(&in[0], in.size(), &off, b.batch_hash.v, 32))
         return false;
@@ -582,26 +587,51 @@ bool ParseHelloChallengePayload(const std::vector<uint8_t>& in, Bytes32* challen
     return true;
 }
 
-bool SerializeHelloAuthPayload(const Bytes32& node_id, const Bytes32& challenge, const std::vector<uint8_t>& signature, std::vector<uint8_t>* out)
+bool SerializeHelloAuthPayload(const Bytes32& node_id,
+                               const Bytes32& challenge,
+                               const char* params_version,
+                               const Bytes32& params_hash,
+                               const std::vector<uint8_t>& signature,
+                               std::vector<uint8_t>* out)
 {
-    if (!out)
+    if (!out || !params_version)
         return false;
     out->clear();
     out->insert(out->end(), node_id.v, node_id.v + 32);
     out->insert(out->end(), challenge.v, challenge.v + 32);
+    const size_t version_n = strlen(params_version);
+    if (version_n == 0 || version_n > 128)
+        return false;
+    WriteU64LE(out, (uint64_t)version_n);
+    out->insert(out->end(), params_version, params_version + version_n);
+    out->insert(out->end(), params_hash.v, params_hash.v + 32);
     WriteU64LE(out, (uint64_t)signature.size());
     out->insert(out->end(), signature.begin(), signature.end());
     return true;
 }
 
-bool ParseHelloAuthPayload(const std::vector<uint8_t>& in, Bytes32* node_id, Bytes32* challenge, std::vector<uint8_t>* signature)
+bool ParseHelloAuthPayload(const std::vector<uint8_t>& in,
+                           Bytes32* node_id,
+                           Bytes32* challenge,
+                           std::string* params_version,
+                           Bytes32* params_hash,
+                           std::vector<uint8_t>* signature)
 {
-    if (!node_id || !challenge || !signature || in.size() < 32 + 32 + 8)
+    if (!node_id || !challenge || !params_version || !params_hash || !signature || in.size() < 32 + 32 + 8 + 32 + 8)
         return false;
     size_t off = 0;
     if (!ReadBytesLocal(&in[0], in.size(), &off, node_id->v, 32))
         return false;
     if (!ReadBytesLocal(&in[0], in.size(), &off, challenge->v, 32))
+        return false;
+    uint64_t version_n = 0;
+    if (!ReadU64LELocal(&in[0], in.size(), &off, &version_n))
+        return false;
+    if (version_n == 0 || version_n > 128 || off + (size_t)version_n > in.size())
+        return false;
+    params_version->assign((const char*)&in[off], (size_t)version_n);
+    off += (size_t)version_n;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, params_hash->v, 32))
         return false;
     uint64_t sig_n = 0;
     if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))

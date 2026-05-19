@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string>
 
 namespace drpow {
 
@@ -21,6 +22,8 @@ struct DrpowParams {
 
     static const uint64_t kPowRecentEligibilityLookbackRounds = kEpochLengthRounds;
     static const uint64_t kPowRecentVoteWeight = 1;
+    static const uint64_t kPowRecentMinWins = 2;
+    static const uint64_t kPowRecentMinWorkUnits = 3000;
 
     static const uint64_t kTargetEpochRounds = kEpochLengthRounds;
     static const uint64_t kGenesisBootstrapRounds = 10;
@@ -30,6 +33,7 @@ struct DrpowParams {
 
 const char* DrpowParamsVersionTag();
 bool ComputeDrpowParamsHash(Bytes32* out_hash);
+bool ComputeDrpowParamsHashFromSpecFile(const char* spec_file_path, Bytes32* out_hash, std::string* out_error);
 
 }  // namespace drpow
 

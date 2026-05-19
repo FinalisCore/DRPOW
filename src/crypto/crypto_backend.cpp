@@ -2,7 +2,11 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 
+#include <errno.h>
 #include <fstream>
 #include <map>
 #include <string>
@@ -69,7 +73,61 @@ struct PqcStdKeyPair {
 static const char* kPqcStdSigAlg = OQS_SIG_alg_ml_dsa_65;
 static std::map<std::string, PqcStdKeyPair> g_pqc_std_keys;
 static bool g_pqc_std_keys_loaded = false;
-static const char* kPqcKeyDbPath = "/tmp/drpow_pqc_keys.bin";
+
+static bool EnsureDir0700(const std::string& path)
+{
+    if (path.empty())
+        return false;
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0)
+    {
+        if (!S_ISDIR(st.st_mode))
+            return false;
+        (void)chmod(path.c_str(), S_IRUSR | S_IWUSR | S_IXUSR);
+        return true;
+    }
+    if (mkdir(path.c_str(), S_IRUSR | S_IWUSR | S_IXUSR) == 0)
+        return true;
+    if (errno == EEXIST)
+        return true;
+    return false;
+}
+
+static std::string GetPqcKeyDbPath()
+{
+    const char* override_path = getenv("DRPOW_PQC_KEY_DB");
+    if (override_path && *override_path)
+        return std::string(override_path);
+    const char* drpow_home = getenv("DRPOW_HOME");
+    std::string home;
+    if (drpow_home && *drpow_home)
+        home = drpow_home;
+    else
+    {
+        const char* user_home = getenv("HOME");
+        if (user_home && *user_home)
+            home = std::string(user_home) + "/.drpow";
+        else
+            home = ".drpow";
+    }
+    return home + "/keys/pqc_keys.bin";
+}
+
+static bool EnsurePqcKeyDbParentReady(const std::string& db_path)
+{
+    const size_t slash = db_path.find_last_of('/');
+    if (slash == std::string::npos)
+        return true;
+    const std::string parent = db_path.substr(0, slash);
+    const size_t slash2 = parent.find_last_of('/');
+    if (slash2 != std::string::npos)
+    {
+        const std::string grand = parent.substr(0, slash2);
+        if (!grand.empty())
+            (void)EnsureDir0700(grand);
+    }
+    return EnsureDir0700(parent);
+}
 
 static void WriteU32LEFile(std::ofstream* out, uint32_t v)
 {
@@ -100,7 +158,10 @@ static bool LoadPqcStdKeyDb()
     g_pqc_std_keys_loaded = true;
     g_pqc_std_keys.clear();
 
-    std::ifstream in(kPqcKeyDbPath, std::ios::binary);
+    const std::string db_path = GetPqcKeyDbPath();
+    if (!EnsurePqcKeyDbParentReady(db_path))
+        return false;
+    std::ifstream in(db_path.c_str(), std::ios::binary);
     if (!in.good())
         return true;
 
@@ -136,11 +197,14 @@ static bool LoadPqcStdKeyDb()
 
 static bool AppendPqcStdKeyDb(const uint8_t seed32[32], const PqcStdKeyPair& kp)
 {
-    std::ifstream check(kPqcKeyDbPath, std::ios::binary);
+    const std::string db_path = GetPqcKeyDbPath();
+    if (!EnsurePqcKeyDbParentReady(db_path))
+        return false;
+    std::ifstream check(db_path.c_str(), std::ios::binary);
     bool need_header = !check.good();
     check.close();
 
-    std::ofstream out(kPqcKeyDbPath, std::ios::binary | std::ios::app);
+    std::ofstream out(db_path.c_str(), std::ios::binary | std::ios::app);
     if (!out.good())
         return false;
     if (need_header)
@@ -150,7 +214,10 @@ static bool AppendPqcStdKeyDb(const uint8_t seed32[32], const PqcStdKeyPair& kp)
     WriteU32LEFile(&out, (uint32_t)kp.priv.size());
     out.write((const char*)kp.pub.data(), (std::streamsize)kp.pub.size());
     out.write((const char*)kp.priv.data(), (std::streamsize)kp.priv.size());
-    return out.good();
+    if (!out.good())
+        return false;
+    (void)chmod(db_path.c_str(), S_IRUSR | S_IWUSR);
+    return true;
 }
 
 static bool KeyIdFromPqcPub(const uint8_t* pub, size_t pub_len, uint8_t out_id[32])
@@ -551,6 +618,44 @@ bool HasStandardPqcBackend()
     return true;
 #else
     return false;
+#endif
+}
+
+bool GetPqcKeyDbSelfCheck(std::string* out_path,
+                          bool* out_parent_owner_only,
+                          bool* out_file_exists,
+                          bool* out_file_owner_only)
+{
+    if (!out_path || !out_parent_owner_only || !out_file_exists || !out_file_owner_only)
+        return false;
+    *out_parent_owner_only = false;
+    *out_file_exists = false;
+    *out_file_owner_only = false;
+#ifdef USE_LIBOQS
+    const std::string db_path = GetPqcKeyDbPath();
+    *out_path = db_path;
+    const size_t slash = db_path.find_last_of('/');
+    if (slash != std::string::npos)
+    {
+        const std::string parent = db_path.substr(0, slash);
+        struct stat stp;
+        if (stat(parent.c_str(), &stp) == 0 && S_ISDIR(stp.st_mode))
+        {
+            const mode_t m = stp.st_mode & 0777;
+            *out_parent_owner_only = (m == (S_IRUSR | S_IWUSR | S_IXUSR));
+        }
+    }
+    struct stat stf;
+    if (stat(db_path.c_str(), &stf) == 0 && S_ISREG(stf.st_mode))
+    {
+        *out_file_exists = true;
+        const mode_t m = stf.st_mode & 0777;
+        *out_file_owner_only = (m == (S_IRUSR | S_IWUSR));
+    }
+    return true;
+#else
+    *out_path = "<unavailable_without_liboqs>";
+    return true;
 #endif
 }
 

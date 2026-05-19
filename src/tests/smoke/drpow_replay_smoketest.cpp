@@ -5,6 +5,7 @@
 
 #include "consensus_round.h"
 #include "crypto_backend.h"
+#include "drpow_params.h"
 #include "proof_verifier.h"
 #include "registry_state_store.h"
 #include "static_validator_set.h"
@@ -28,6 +29,7 @@ static bool BuildBatchHash(const RoundBatch& batch, Bytes32* out)
 {
     std::vector<uint8_t> encoded;
     WriteU64LE(&encoded, batch.round);
+    WriteBytes32(&encoded, batch.params_hash);
     WriteU64LE(&encoded, (uint64_t)batch.spends.size());
     for (size_t i = 0; i < batch.spends.size(); ++i)
         SerializeSpendTxCanonical(batch.spends[i], &encoded);
@@ -116,6 +118,11 @@ int main()
 
         RoundBatch batch;
         batch.round = 1;
+        if (!ComputeDrpowParamsHash(&batch.params_hash))
+        {
+            printf("params_hash_failed\n");
+            return 11;
+        }
         batch.mints.push_back(mint);
         BuildBatchHash(batch, &batch.batch_hash);
 

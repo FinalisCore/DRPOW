@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <stdint.h>
+#include <string>
 #include <vector>
 
 #include "consensus_round.h"
@@ -68,8 +69,18 @@ bool SerializeSpendTxSubmitPayload(const SpendTx& tx, std::vector<uint8_t>* out)
 bool ParseSpendTxSubmitPayload(const std::vector<uint8_t>& in, SpendTx* out);
 bool SerializeHelloChallengePayload(const Bytes32& challenge, std::vector<uint8_t>* out);
 bool ParseHelloChallengePayload(const std::vector<uint8_t>& in, Bytes32* challenge);
-bool SerializeHelloAuthPayload(const Bytes32& node_id, const Bytes32& challenge, const std::vector<uint8_t>& signature, std::vector<uint8_t>* out);
-bool ParseHelloAuthPayload(const std::vector<uint8_t>& in, Bytes32* node_id, Bytes32* challenge, std::vector<uint8_t>* signature);
+bool SerializeHelloAuthPayload(const Bytes32& node_id,
+                               const Bytes32& challenge,
+                               const char* params_version,
+                               const Bytes32& params_hash,
+                               const std::vector<uint8_t>& signature,
+                               std::vector<uint8_t>* out);
+bool ParseHelloAuthPayload(const std::vector<uint8_t>& in,
+                           Bytes32* node_id,
+                           Bytes32* challenge,
+                           std::string* params_version,
+                           Bytes32* params_hash,
+                           std::vector<uint8_t>* signature);
 
 }  
 

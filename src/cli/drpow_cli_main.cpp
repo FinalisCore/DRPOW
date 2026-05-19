@@ -813,7 +813,7 @@ static int WalletIdentityCmd(const char* subcmd, const char* dir, uint32_t magic
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
     {
-        printf("crypto_backend_select_failed\n");
+        printf("crypto_backend_select_failed reason=liboqs_required backend=ml_dsa_65 build_hint=USE_LIBOQS=1\n");
         return 2;
     }
     WalletIdentity id;
@@ -840,7 +840,7 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
     {
-        printf("crypto_backend_select_failed\n");
+        printf("crypto_backend_select_failed reason=liboqs_required backend=ml_dsa_65 build_hint=USE_LIBOQS=1\n");
         return 2;
     }
     WalletIdentity id;
@@ -887,7 +887,7 @@ static int GetBalanceCmd(const char* dir, uint32_t magic, const char* registry_f
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
     {
-        printf("crypto_backend_select_failed\n");
+        printf("crypto_backend_select_failed reason=liboqs_required backend=ml_dsa_65 build_hint=USE_LIBOQS=1\n");
         return 2;
     }
     WalletIdentity id;
@@ -916,7 +916,7 @@ static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
     {
-        printf("crypto_backend_select_failed\n");
+        printf("crypto_backend_select_failed reason=liboqs_required backend=ml_dsa_65 build_hint=USE_LIBOQS=1\n");
         return 2;
     }
     WalletIdentity id;
@@ -958,7 +958,7 @@ static int WalletSendCmd(const char* to_address,
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
     {
-        printf("crypto_backend_select_failed\n");
+        printf("crypto_backend_select_failed reason=liboqs_required backend=ml_dsa_65 build_hint=USE_LIBOQS=1\n");
         return 2;
     }
     WalletIdentity id;

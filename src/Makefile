@@ -52,12 +52,13 @@ DRPOW_PROOF_POLICY_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_proof
 DRPOW_PROOF_BUDGET_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_proof_budget_smoketest.cpp
 DRPOW_PROOF_MIGRATION_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_proof_migration_smoketest.cpp
 DRPOW_POW_ELIGIBILITY_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_pow_eligibility_smoketest.cpp
+DRPOW_POW_SYBIL_HARDENING_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_pow_sybil_hardening_smoketest.cpp
 DRPOW_POW_EPOCH_TRANSITION_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_pow_epoch_transition_smoketest.cpp
 DRPOW_DIFFICULTY_TRANSITION_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_difficulty_transition_smoketest.cpp
 
 .PHONY: all clean test
 
-all: drpow_smoketest drpow_lottery_smoketest drpow_replay_smoketest drpow_proof_policy_smoketest drpow_proof_budget_smoketest drpow_proof_migration_smoketest drpow_pow_eligibility_smoketest drpow_pow_epoch_transition_smoketest drpow_difficulty_transition_smoketest drpow_node drpow_cli
+all: drpow_smoketest drpow_lottery_smoketest drpow_replay_smoketest drpow_proof_policy_smoketest drpow_proof_budget_smoketest drpow_proof_migration_smoketest drpow_pow_eligibility_smoketest drpow_pow_sybil_hardening_smoketest drpow_pow_epoch_transition_smoketest drpow_difficulty_transition_smoketest drpow_node drpow_cli
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -83,6 +84,9 @@ $(BUILD_DIR)/drpow_proof_migration_smoketest: $(DRPOW_PROOF_MIGRATION_SMOKETEST_
 $(BUILD_DIR)/drpow_pow_eligibility_smoketest: $(DRPOW_POW_ELIGIBILITY_SMOKETEST_SRCS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $(DRPOW_POW_ELIGIBILITY_SMOKETEST_SRCS) $(LDFLAGS) $(LDLIBS)
 
+$(BUILD_DIR)/drpow_pow_sybil_hardening_smoketest: $(DRPOW_POW_SYBIL_HARDENING_SMOKETEST_SRCS) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $(DRPOW_POW_SYBIL_HARDENING_SMOKETEST_SRCS) $(LDFLAGS) $(LDLIBS)
+
 $(BUILD_DIR)/drpow_pow_epoch_transition_smoketest: $(DRPOW_POW_EPOCH_TRANSITION_SMOKETEST_SRCS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $(DRPOW_POW_EPOCH_TRANSITION_SMOKETEST_SRCS) $(LDFLAGS) $(LDLIBS)
 
@@ -102,6 +106,7 @@ drpow_proof_policy_smoketest: $(BUILD_DIR)/drpow_proof_policy_smoketest
 drpow_proof_budget_smoketest: $(BUILD_DIR)/drpow_proof_budget_smoketest
 drpow_proof_migration_smoketest: $(BUILD_DIR)/drpow_proof_migration_smoketest
 drpow_pow_eligibility_smoketest: $(BUILD_DIR)/drpow_pow_eligibility_smoketest
+drpow_pow_sybil_hardening_smoketest: $(BUILD_DIR)/drpow_pow_sybil_hardening_smoketest
 drpow_pow_epoch_transition_smoketest: $(BUILD_DIR)/drpow_pow_epoch_transition_smoketest
 drpow_difficulty_transition_smoketest: $(BUILD_DIR)/drpow_difficulty_transition_smoketest
 drpow_node: $(BUILD_DIR)/drpow_node
@@ -115,6 +120,7 @@ test: all
 	./$(BUILD_DIR)/drpow_proof_budget_smoketest
 	./$(BUILD_DIR)/drpow_proof_migration_smoketest
 	./$(BUILD_DIR)/drpow_pow_eligibility_smoketest
+	./$(BUILD_DIR)/drpow_pow_sybil_hardening_smoketest
 	./$(BUILD_DIR)/drpow_pow_epoch_transition_smoketest
 	./$(BUILD_DIR)/drpow_difficulty_transition_smoketest
 
