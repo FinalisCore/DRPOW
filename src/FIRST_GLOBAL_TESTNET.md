@@ -58,7 +58,7 @@ Failure indicators:
 ## 7. First External Acceptance Criteria
 
 1. At least 3 seeds run for 24h without divergence.
-2. Two external joiner nodes catch up from round 0 and from delayed start.
+2. Two external nodes catch up from round 0 and from delayed start.
 3. All nodes agree on `(round, state_root)` at checkpoints.
 4. Restart/rejoin of one seed still converges.
 

@@ -15,7 +15,6 @@ AUTOPROPOSE="${AUTOPROPOSE:-}"
 AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-20}"
 DURATION_SEC="${DURATION_SEC:-0}"
 LOG_LEVEL="${LOG_LEVEL:-normal}"
-NODE_ROLE="${NODE_ROLE:-auto}"
 DEFAULT_BOOTSTRAP_PEER="${DEFAULT_BOOTSTRAP_PEER:-${DEFAULT_SEED_PEER}}"
 
 CONFIG_DIR="${DRPOW_HOME}/config"
@@ -40,11 +39,6 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command
 
 ensure_default_peers_file() {
   local default_peer="${DEFAULT_BOOTSTRAP_PEER}"
-  local role_lc="$(echo "${NODE_ROLE}" | tr '[:upper:]' '[:lower:]')"
-  if [ -z "${SEED_PEER}" ] && [ "${role_lc}" = "leader" ]; then
-    # Explicit seedless leader bootstrap should not inherit or auto-add peers.
-    return
-  fi
   [ -z "${default_peer}" ] && return
   mkdir -p "$(dirname "${PEERS_FILE}")"
   touch "${PEERS_FILE}"
@@ -90,18 +84,6 @@ load_bootstrap_peers() {
     return
   fi
   BOOTSTRAP_PEERS="$(printf '%s\n' "${peers[@]}" | awk '!seen[$0]++' | paste -sd, -)"
-}
-
-endpoint_in_bootstrap_peers() {
-  local endpoint="$1"
-  [ -z "${endpoint}" ] && return 1
-  [ -z "${BOOTSTRAP_PEERS}" ] && return 1
-  local IFS=','
-  local p
-  for p in ${BOOTSTRAP_PEERS}; do
-    [ "${p}" = "${endpoint}" ] && return 0
-  done
-  return 1
 }
 
 check_bind_port_available() {
@@ -180,29 +162,7 @@ prepare_genesis() {
 
 write_config() {
   mkdir -p "${CONFIG_DIR}"
-  local JOINER_MODE=0
-  local role_lc="$(echo "${NODE_ROLE}" | tr '[:upper:]' '[:lower:]')"
-  if [ -n "${SEED_PEER}" ]; then
-    JOINER_MODE=1
-  elif [ "${role_lc}" = "joiner" ] || [ "${role_lc}" = "follower" ] || [ "${role_lc}" = "sync" ]; then
-    JOINER_MODE=1
-  elif [ -n "${BOOTSTRAP_PEERS}" ] && [ -n "${PUBLIC_ENDPOINT}" ] && ! endpoint_in_bootstrap_peers "${PUBLIC_ENDPOINT}"; then
-    # Follower inference: bootstrap peers configured and this node advertises a
-    # non-bootstrap endpoint.
-    JOINER_MODE=1
-  fi
-  if [ "${JOINER_MODE}" = "1" ]; then
-    # Keep explicit follower/sync nodes as non-mining sync replicas.
-    if [ "${role_lc}" = "follower" ] || [ "${role_lc}" = "sync" ]; then
-      if [ -n "${AUTOPROPOSE}" ] && [ "${AUTOPROPOSE}" != "0" ]; then
-        echo "config_override: forcing AUTOPROPOSE=0 because role=${role_lc} in joiner_mode=1" >&2
-      fi
-      AUTOPROPOSE=0
-    elif [ -z "${AUTOPROPOSE}" ]; then
-      # Open admission: joiners can mine/compete by default.
-      AUTOPROPOSE=1
-    fi
-  elif [ -z "${AUTOPROPOSE}" ]; then
+  if [ -z "${AUTOPROPOSE}" ]; then
     AUTOPROPOSE=1
   fi
   cat > "${CONF_FILE}" <<CFG
@@ -212,7 +172,6 @@ network_magic_hex=${NETWORK_MAGIC_HEX}
 duration_sec=${DURATION_SEC}
 autopropose=${AUTOPROPOSE}
 autopropose_interval_sec=${AUTOPROPOSE_INTERVAL_SEC}
-joiner_mode=${JOINER_MODE}
 signer_privkey_hex=${SIGNER_PRIVKEY_HEX}
 genesis_hash_hex=${GENESIS_HASH_HEX}
 log_level=${LOG_LEVEL}
@@ -249,7 +208,6 @@ main() {
   [ -n "${SEED_PEER}" ] && echo "seed_peer=${SEED_PEER}" || echo "seed_peer=<none>"
   echo "peers_file=${PEERS_FILE}"
   [ -n "${BOOTSTRAP_PEERS}" ] && echo "bootstrap_peers=${BOOTSTRAP_PEERS}" || echo "bootstrap_peers=<none>"
-  echo "node_role=${NODE_ROLE}"
   echo "data_dir=${DATA_DIR}"
   echo "cli_env_hint=run 'source ${ENV_FILE}' in any shell before using build/drpow_cli"
   exec "${ROOT_DIR}/build/drpow_node" "${CONF_FILE}"

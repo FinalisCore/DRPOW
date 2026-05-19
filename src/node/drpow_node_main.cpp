@@ -2084,7 +2084,7 @@ int main(int argc, char** argv)
             }
             if (accepted == 0)
             {
-                // Fallback for late joiners: if a full-history request from round 1
+                // Fallback for late-syncing peers: if a full-history request from round 1
                 // returns empty, ask for a recent window near observed tip.
                 if (last_committed_round == 0 && from_round == 1 && synced_last_round > 1)
                 {
@@ -2502,7 +2502,7 @@ int main(int argc, char** argv)
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] voting_mode=pow_only\n");
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
-    Logf(LOG_NORMAL, "[BOOT] joiner_mode=%d\n", cfg.joiner_mode);
+    Logf(LOG_NORMAL, "[BOOT] sync_policy=sync_first\n");
     Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
     Logf(LOG_NORMAL, "[BOOT] commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
     Logf(LOG_NORMAL, "[BOOT] sync_tip round=%llu\n", (unsigned long long)synced_last_round);
@@ -2519,7 +2519,7 @@ int main(int argc, char** argv)
     time_t last_log_rotate_tick = start;
     int dynamic_autopropose_interval_sec = cfg.autopropose_interval_sec > 0 ? cfg.autopropose_interval_sec : 1;
     size_t dynamic_max_spends_per_round = economics_policy.max_spends_per_round;
-    bool joiner_sync_first_prev = false;
+    bool sync_first_prev = false;
     while (true)
     {
         reactor.PollOnce();
@@ -2596,40 +2596,28 @@ int main(int argc, char** argv)
         const bool is_synced_or_standalone =
             (last_committed_round >= synced_last_round) &&
             (!have_peers || synced_last_round > 0 || !any_peer_progress);
-        // Sync-first policy for joiners: fully (or near-fully) catch up before mining.
-        // This keeps late joiners deterministic and avoids wasting work on stale rounds.
-        const uint64_t kJoinerSyncFirstLag = 3;
+        // Sync-first policy: fully (or near-fully) catch up before mining.
+        // This keeps late arrivals deterministic and avoids wasting work on stale rounds.
+        const uint64_t kSyncFirstLag = 3;
         const uint64_t lag_to_sync = (synced_last_round > last_committed_round)
                                          ? (synced_last_round - last_committed_round)
                                          : 0;
-        const bool joiner_sync_first =
-            (cfg.joiner_mode != 0) &&
-            ((last_committed_round == 0 && synced_last_round > 0) || (lag_to_sync > kJoinerSyncFirstLag));
-        if (cfg.joiner_mode != 0 && joiner_sync_first != joiner_sync_first_prev)
+        const bool sync_first =
+            ((last_committed_round == 0 && synced_last_round > 0) || (lag_to_sync > kSyncFirstLag));
+        if (sync_first != sync_first_prev)
         {
-            Logf(LOG_NORMAL, "[JOINER] mode=%s local=%llu synced=%llu lag=%llu threshold=%llu\n",
-                   joiner_sync_first ? "sync_first" : "open_mining",
+            Logf(LOG_NORMAL, "[SYNC] mode=%s local=%llu synced=%llu lag=%llu threshold=%llu\n",
+                   sync_first ? "sync_first" : "open_mining",
                    (unsigned long long)last_committed_round,
                    (unsigned long long)synced_last_round,
                    (unsigned long long)lag_to_sync,
-                   (unsigned long long)kJoinerSyncFirstLag);
-            joiner_sync_first_prev = joiner_sync_first;
+                   (unsigned long long)kSyncFirstLag);
+            sync_first_prev = sync_first;
         }
-        // Leader-mode nodes (joiner_mode=0) must not stall on sync watermark bookkeeping.
-        const bool autopropose_sync_gate_ok = (cfg.joiner_mode == 0) ? true : (is_synced_or_standalone && !joiner_sync_first);
+        const bool autopropose_sync_gate_ok = is_synced_or_standalone && !sync_first;
         const uint64_t target_round = last_committed_round + 1;
-        // Open admission: if node is configured to autopropose, allow it to
-        // attempt PoW participation.
-        // Pure sync replicas keep AUTOPROPOSE=0 via scripts.
-        const bool joiner_admission_ok = (cfg.joiner_mode == 0) || (cfg.autopropose != 0);
-        if (cfg.autopropose != 0 && !joiner_admission_ok)
-            Logf(LOG_DEBUG, "joiner_gate skip_autopropose round=%llu synced=%llu local=%llu\n",
-                 (unsigned long long)target_round,
-                 (unsigned long long)synced_last_round,
-                 (unsigned long long)last_committed_round);
         if (cfg.autopropose != 0 &&
             autopropose_sync_gate_ok &&
-            joiner_admission_ok &&
             (time(NULL) - last_autopropose_tick) >= dynamic_autopropose_interval_sec)
         {
             RoundBatch batch;

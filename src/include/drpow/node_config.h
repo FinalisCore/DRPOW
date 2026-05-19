@@ -15,7 +15,6 @@ struct NodeConfig {
     int duration_sec;
     int autopropose;
     int autopropose_interval_sec;
-    int joiner_mode;
     uint32_t network_magic;
     std::vector<std::string> validator_pubkeys_hex;
     std::string signer_privkey_hex;
