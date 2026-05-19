@@ -17,7 +17,7 @@ namespace {
 static const uint16_t kCommitRecordVersion1 = 1;
 static const uint16_t kHashAlgSha256 = 1;
 static const uint16_t kSigAlgPqcBackend = 1;
-static const uint64_t kAtomicPerCoin = 1000ULL;
+static const uint64_t kAtomicPerCoin = 100000000ULL;
 static const uint64_t kMaxSupplyAtomic = 21000000ULL * kAtomicPerCoin;
 
 static bool AddNoOverflow(uint64_t a, uint64_t b, uint64_t* out)

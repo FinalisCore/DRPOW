@@ -24,6 +24,7 @@
 #include "economics_policy.h"
 
 using namespace drpow;
+static const uint64_t kAtomicPerCoin = 100000000ULL;
 
 static std::string DefaultPathUnderHome(const char* suffix)
 {
@@ -222,8 +223,8 @@ static bool DecodeHexLine(const std::string& s, std::vector<uint8_t>* out)
     return true;
 }
 
-// CLI amount uses 3 decimal places: 1.234 coin => 1234 atomic units.
-static bool ParseAmountAtomic3(const std::string& s, uint64_t* out_units)
+// CLI amount uses 8 decimal places: 1.23456789 coin => 123456789 atomic units.
+static bool ParseAmountAtomic8(const std::string& s, uint64_t* out_units)
 {
     if (!out_units || s.empty())
         return false;
@@ -232,7 +233,7 @@ static bool ParseAmountAtomic3(const std::string& s, uint64_t* out_units)
     std::string fp = (dot == std::string::npos) ? "" : s.substr(dot + 1);
     if (ip.empty())
         ip = "0";
-    if (fp.size() > 3)
+    if (fp.size() > 8)
         return false;
     for (size_t i = 0; i < ip.size(); ++i)
         if (ip[i] < '0' || ip[i] > '9')
@@ -240,17 +241,26 @@ static bool ParseAmountAtomic3(const std::string& s, uint64_t* out_units)
     for (size_t i = 0; i < fp.size(); ++i)
         if (fp[i] < '0' || fp[i] > '9')
             return false;
-    while (fp.size() < 3)
+    while (fp.size() < 8)
         fp.push_back('0');
     uint64_t i_part = (uint64_t)strtoull(ip.c_str(), NULL, 10);
     uint64_t f_part = (uint64_t)strtoull(fp.c_str(), NULL, 10);
-    if (i_part > (UINT64_MAX / 1000ULL))
+    if (i_part > (UINT64_MAX / 100000000ULL))
         return false;
-    uint64_t v = i_part * 1000ULL;
+    uint64_t v = i_part * 100000000ULL;
     if (UINT64_MAX - v < f_part)
         return false;
     *out_units = v + f_part;
     return true;
+}
+
+static std::string FormatAtomic8(uint64_t units)
+{
+    char buf[64];
+    const unsigned long long whole = (unsigned long long)(units / kAtomicPerCoin);
+    const unsigned long long frac = (unsigned long long)(units % kAtomicPerCoin);
+    snprintf(buf, sizeof(buf), "%llu.%08llu", whole, frac);
+    return std::string(buf);
 }
 
 static bool FindLatestOutboxFile(const std::string& data_dir, std::string* out_path)
@@ -678,12 +688,12 @@ static int SendCmd(int argc, char** argv)
         return 51;
     }
     uint64_t amount = 0, fee = 0;
-    if (!ParseAmountAtomic3(amount_s, &amount))
+    if (!ParseAmountAtomic8(amount_s, &amount))
     {
         printf("send_error: bad_amount\n");
         return 52;
     }
-    if (!fee_s.empty() && !ParseAmountAtomic3(fee_s, &fee))
+    if (!fee_s.empty() && !ParseAmountAtomic8(fee_s, &fee))
     {
         printf("send_error: bad_fee\n");
         return 53;
@@ -870,6 +880,7 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     {
         printf("wallet_utxos=%zu\n", utxos.size());
         printf("wallet_balance=%llu\n", (unsigned long long)balance);
+        printf("wallet_balance_drpow=%s\n", FormatAtomic8(balance).c_str());
     }
     if (!have_ledger)
         printf("ledger_status=unavailable\n");
@@ -878,6 +889,9 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
         printf("ledger_total_supply=%llu\n", (unsigned long long)total_supply);
         printf("ledger_total_minted=%llu\n", (unsigned long long)total_minted);
         printf("ledger_total_fees_burned=%llu\n", (unsigned long long)total_fees_burned);
+        printf("ledger_total_supply_drpow=%s\n", FormatAtomic8(total_supply).c_str());
+        printf("ledger_total_minted_drpow=%s\n", FormatAtomic8(total_minted).c_str());
+        printf("ledger_total_fees_burned_drpow=%s\n", FormatAtomic8(total_fees_burned).c_str());
     }
     return 0;
 }
@@ -908,6 +922,7 @@ static int GetBalanceCmd(const char* dir, uint32_t magic, const char* registry_f
         return 4;
     }
     printf("%llu\n", (unsigned long long)balance);
+    printf("getbalance_drpow=%s\n", FormatAtomic8(balance).c_str());
     return 0;
 }
 
@@ -938,12 +953,14 @@ static int GetUtxoCmd(const char* dir, uint32_t magic, const char* registry_file
     }
     for (size_t i = 0; i < utxos.size(); ++i)
     {
-        printf("coin_id=%s value=%llu owner=%s\n",
+        printf("coin_id=%s value=%llu value_drpow=%s owner=%s\n",
                Hex(utxos[i].coin_id.v, 32).c_str(),
                (unsigned long long)utxos[i].value,
+               FormatAtomic8(utxos[i].value).c_str(),
                Hex(utxos[i].owner_pubkey.v, 32).c_str());
     }
     printf("utxo_count=%zu balance=%llu\n", utxos.size(), (unsigned long long)balance);
+    printf("utxo_balance_drpow=%s\n", FormatAtomic8(balance).c_str());
     return 0;
 }
 
@@ -998,6 +1015,9 @@ static int WalletSendCmd(const char* to_address,
         printf("send_error: insufficient_funds balance=%llu required=%llu\n",
                (unsigned long long)balance,
                (unsigned long long)required);
+        printf("send_error_details balance_drpow=%s required_drpow=%s\n",
+               FormatAtomic8(balance).c_str(),
+               FormatAtomic8(required).c_str());
         return 6;
     }
 
@@ -1091,12 +1111,15 @@ static int WalletSendCmd(const char* to_address,
     printf("send_draft_created file=%s\n", out_path.c_str());
     printf("send_to=%s\n", to_address);
     printf("send_amount=%llu\n", (unsigned long long)amount);
+    printf("send_amount_drpow=%s\n", FormatAtomic8(amount).c_str());
     printf("send_tax_ppm=%llu\n", (unsigned long long)tax_ppm);
     printf("send_next_round_estimate=%llu\n", (unsigned long long)next_round);
     printf("send_burn_tax=%llu\n", (unsigned long long)burn_tax);
+    printf("send_burn_tax_drpow=%s\n", FormatAtomic8(burn_tax).c_str());
     printf("send_inputs=%zu\n", tx.inputs.size());
     printf("send_outputs=%zu\n", tx.outputs.size());
     printf("send_change=%llu\n", (unsigned long long)change);
+    printf("send_change_drpow=%s\n", FormatAtomic8(change).c_str());
     printf("send_note=tax20_applied_autosubmit_path_supported\n");
     return 0;
 }
