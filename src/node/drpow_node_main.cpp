@@ -913,6 +913,7 @@ int main(int argc, char** argv)
     std::map<std::string, RoundBatch> known_batches;
     std::map<std::string, std::vector<Vote> > known_votes;
     std::map<std::string, std::set<std::string> > known_vote_ids;
+    std::map<std::string, size_t> qc_gate_last_votes;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     const uint64_t startup_registry_bytes = FileSizeBytes(registry);
     const uint64_t startup_commitlog_bytes = FileSizeBytes(commitlog);
@@ -1425,6 +1426,16 @@ int main(int argc, char** argv)
             return;
         reject_counters_total[std::string(reason)] += 1;
         reject_counters_window[std::string(reason)] += 1;
+    };
+    auto log_qc_gate_insufficient = [&](uint64_t round, const std::string& batch_key, size_t votes, size_t min_votes) {
+        std::map<std::string, size_t>::iterator it = qc_gate_last_votes.find(batch_key);
+        if (it != qc_gate_last_votes.end() && it->second == votes)
+            return;
+        qc_gate_last_votes[batch_key] = votes;
+        Logf(LOG_NORMAL, "[QC][GATE] round=%llu status=insufficient votes=%zu min_votes=%zu\n",
+               (unsigned long long)round,
+               votes,
+               min_votes);
     };
     auto observe_qc = [&](const QuorumCertificate& qc) {
         metric_qc_seen += 1;
@@ -2243,6 +2254,15 @@ int main(int argc, char** argv)
                 return;
             }
             metric_vote_accepts += 1;
+            {
+                const std::string k = Bytes32Key(vote.batch_hash);
+                const std::string voter_key((const char*)vote.validator_id.v, 32);
+                if (!known_vote_ids[k].count(voter_key))
+                {
+                    known_vote_ids[k].insert(voter_key);
+                    known_votes[k].push_back(vote);
+                }
+            }
             std::vector<uint8_t> vote_payload;
             if (!SerializeVotePayload(vote, &vote_payload))
                 return;
@@ -2352,13 +2372,11 @@ int main(int argc, char** argv)
                 const size_t min_votes = (size_t)DrpowParams::kMinQcVotes;
                 if (qc.votes.size() < min_votes)
                 {
-                    Logf(LOG_NORMAL, "[QC][GATE] round=%llu status=insufficient votes=%zu min_votes=%zu\n",
-                           (unsigned long long)itb->second.round,
-                           qc.votes.size(),
-                           min_votes);
+                    log_qc_gate_insufficient(itb->second.round, k, qc.votes.size(), min_votes);
                     return;
                 }
             }
+            qc_gate_last_votes.erase(k);
             observe_qc(qc);
             std::vector<uint8_t> commit_payload;
             if (!SerializeCommitPayload(itb->second, qc, &commit_payload))
@@ -2451,6 +2469,7 @@ int main(int argc, char** argv)
             known_batches.erase(Bytes32Key(batch.batch_hash));
             known_votes.erase(Bytes32Key(batch.batch_hash));
             known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+            qc_gate_last_votes.erase(Bytes32Key(batch.batch_hash));
             const uint64_t minted = SumBatchMintValue(batch);
             const uint64_t fees = SumBatchFees(batch);
             const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
@@ -2819,13 +2838,11 @@ int main(int argc, char** argv)
                             bool local_supermajority = (local_qc.votes.size() >= (size_t)DrpowParams::kMinQcVotes);
                             if (!local_supermajority)
                             {
-                                Logf(LOG_NORMAL, "[QC][GATE] round=%llu status=insufficient votes=%zu min_votes=%llu\n",
-                                       (unsigned long long)batch.round,
-                                       local_qc.votes.size(),
-                                       (unsigned long long)DrpowParams::kMinQcVotes);
+                                log_qc_gate_insufficient(batch.round, k, local_qc.votes.size(), (size_t)DrpowParams::kMinQcVotes);
                             }
                             if (local_supermajority && batch.round > last_committed_round)
                             {
+                                qc_gate_last_votes.erase(k);
                                 if (engine.Commit(batch, local_qc))
                                 {
                                     metric_commit_accepts += 1;
@@ -2847,6 +2864,7 @@ int main(int argc, char** argv)
                                     known_batches.erase(Bytes32Key(batch.batch_hash));
                                     known_votes.erase(Bytes32Key(batch.batch_hash));
                                     known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+                                    qc_gate_last_votes.erase(Bytes32Key(batch.batch_hash));
                                     const uint64_t minted = SumBatchMintValue(batch);
                                     const uint64_t fees = SumBatchFees(batch);
                                     const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
@@ -2878,6 +2896,7 @@ int main(int argc, char** argv)
                                     known_batches.erase(Bytes32Key(batch.batch_hash));
                                     known_votes.erase(Bytes32Key(batch.batch_hash));
                                     known_vote_ids.erase(Bytes32Key(batch.batch_hash));
+                                    qc_gate_last_votes.erase(Bytes32Key(batch.batch_hash));
                                 }
                             }
                             std::vector<uint8_t> vote_payload;
