@@ -3076,9 +3076,18 @@ int main(int argc, char** argv)
         }
 
         const bool have_peers = !peer_last_round.empty();
+        bool any_peer_progress = false;
+        for (std::map<int, uint64_t>::const_iterator it = peer_last_round.begin(); it != peer_last_round.end(); ++it)
+        {
+            if (it->second > 0)
+            {
+                any_peer_progress = true;
+                break;
+            }
+        }
         const bool is_synced_or_standalone =
             (last_committed_round >= synced_last_round) &&
-            (!have_peers || synced_last_round > 0);
+            (!have_peers || synced_last_round > 0 || !any_peer_progress);
         const uint64_t target_round = last_committed_round + 1;
         const bool proposer_eligible =
             IsValidatorForRound(signer_id, target_round) ||
