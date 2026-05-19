@@ -37,6 +37,12 @@ enum {
     LOG_DEBUG = 2
 };
 
+enum {
+    ROUND_MODE_MINING = 0,
+    ROUND_MODE_VERIFY_VOTE = 1,
+    ROUND_MODE_VOTED_LOCKED = 2
+};
+
 static int g_log_level = LOG_NORMAL;
 
 static bool LogEnabled(int level)
@@ -939,6 +945,7 @@ int main(int argc, char** argv)
     std::map<uint64_t, std::string> round_best_batch_key;
     std::map<uint64_t, Bytes32> round_best_batch_score;
     std::map<uint64_t, uint64_t> round_first_seen_ms;
+    std::map<uint64_t, int> round_mode_state;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     const uint64_t startup_registry_bytes = FileSizeBytes(registry);
     const uint64_t startup_commitlog_bytes = FileSizeBytes(commitlog);
@@ -1146,7 +1153,27 @@ int main(int argc, char** argv)
             round_best_batch_score.erase(r);
             round_first_seen_ms.erase(r);
             local_vote_by_round.erase(r);
+            round_mode_state.erase(r);
         }
+    };
+    auto SetRoundMode = [&](uint64_t round, int mode, const char* reason) {
+        if (round == 0)
+            return;
+        std::map<uint64_t, int>::const_iterator it = round_mode_state.find(round);
+        if (it != round_mode_state.end() && it->second == mode)
+            return;
+        round_mode_state[round] = mode;
+        const char* mode_s = "unknown";
+        if (mode == ROUND_MODE_MINING)
+            mode_s = "mining";
+        else if (mode == ROUND_MODE_VERIFY_VOTE)
+            mode_s = "verify_vote";
+        else if (mode == ROUND_MODE_VOTED_LOCKED)
+            mode_s = "voted_locked";
+        Logf(LOG_NORMAL, "[ROUND_MODE] round=%llu mode=%s reason=%s\n",
+             (unsigned long long)round,
+             mode_s,
+             reason ? reason : "-");
     };
     auto RoundVoterKey = [&](uint64_t round, const Bytes32& voter) {
         std::string key((const char*)&round, sizeof(round));
@@ -1158,6 +1185,7 @@ int main(int argc, char** argv)
         if (it == local_vote_by_round.end())
         {
             local_vote_by_round[round] = batch_hash;
+            SetRoundMode(round, ROUND_MODE_VOTED_LOCKED, "local_vote_emitted");
             return true;
         }
         return memcmp(it->second.v, batch_hash.v, 32) == 0;
@@ -1565,6 +1593,7 @@ int main(int argc, char** argv)
         const uint64_t round = batch.round;
         if (round <= last_committed_round)
             return;
+        SetRoundMode(round, ROUND_MODE_VERIFY_VOTE, "proposal_seen");
         const std::string batch_key = Bytes32Key(batch.batch_hash);
         if (!known_batches.count(batch_key))
             known_batches[batch_key] = batch;
@@ -1578,6 +1607,9 @@ int main(int argc, char** argv)
         {
             round_best_batch_key[round] = batch_key;
             round_best_batch_score[round] = score;
+            Logf(LOG_NORMAL, "[ROUND_MODE] round=%llu mode=verify_vote reason=proposal_seen best_batch=%s\n",
+                 (unsigned long long)round,
+                 Hex32(batch.batch_hash).c_str());
             return;
         }
         const Bytes32& best = round_best_batch_score[round];
@@ -1586,6 +1618,9 @@ int main(int argc, char** argv)
         {
             round_best_batch_key[round] = batch_key;
             round_best_batch_score[round] = score;
+            Logf(LOG_NORMAL, "[ROUND_MODE] round=%llu mode=verify_vote reason=proposal_better best_batch=%s\n",
+                 (unsigned long long)round,
+                 Hex32(batch.batch_hash).c_str());
         }
     };
     auto flush_drop_summary = [&](bool force) {
@@ -2597,6 +2632,18 @@ int main(int argc, char** argv)
             const uint64_t minted = SumBatchMintValue(batch);
             const uint64_t fees = SumBatchFees(batch);
             const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
+            const uint64_t expected_mint_post = ExpectedMintBudgetForRound(store, batch.round, economics_policy);
+            if (minted != expected_mint_post)
+            {
+                printf("fatal commit_post_mint_mismatch round=%llu minted=%llu expected=%llu mints=%zu batch=%s\n",
+                       (unsigned long long)batch.round,
+                       (unsigned long long)minted,
+                       (unsigned long long)expected_mint_post,
+                       batch.mints.size(),
+                       Hex32(batch.batch_hash).c_str());
+                fflush(stdout);
+                abort();
+            }
             const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
             const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
             printf("commit ok round=%llu spends=%zu mints=%zu minted=%llu minted_drpow=%s fees=%llu fees_drpow=%s subsidy=%llu subsidy_drpow=%s miner=%s target=%s\n",
@@ -2779,6 +2826,19 @@ int main(int argc, char** argv)
                 const uint64_t minted = SumBatchMintValue(batch);
                 const uint64_t fees = SumBatchFees(batch);
                 const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
+                const uint64_t expected_mint_post = ExpectedMintBudgetForRound(store, batch.round, economics_policy);
+                if (minted != expected_mint_post)
+                {
+                    Logf(LOG_NORMAL,
+                         "fatal commit_post_mint_mismatch round=%llu minted=%llu expected=%llu mints=%zu batch=%s\n",
+                         (unsigned long long)batch.round,
+                         (unsigned long long)minted,
+                         (unsigned long long)expected_mint_post,
+                         batch.mints.size(),
+                         Hex32(batch.batch_hash).c_str());
+                    fflush(stdout);
+                    abort();
+                }
                 const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
                 const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
                 Logf(LOG_NORMAL, "[COMMIT] ok round=%llu spends=%zu mints=%zu minted=%llu minted_drpow=%s fees=%llu fees_drpow=%s subsidy=%llu subsidy_drpow=%s miner=%s target=%s\n",
@@ -2939,6 +2999,7 @@ int main(int argc, char** argv)
             if (!have_pending)
             {
                 batch.round = target_round;
+                SetRoundMode(target_round, ROUND_MODE_MINING, "autopropose_start");
                 batch.params_hash = params_hash;
                 std::vector<SpendTx> drained_spends = mempool.DrainSpends(dynamic_max_spends_per_round);
                 batch.spends = drained_spends;
