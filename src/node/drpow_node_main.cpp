@@ -63,6 +63,16 @@ static uint64_t NowMonotonicMs()
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
+static std::string FormatAtomic8(uint64_t units)
+{
+    static const uint64_t kAtomicPerCoin = 100000000ULL;
+    char buf[64];
+    const unsigned long long whole = (unsigned long long)(units / kAtomicPerCoin);
+    const unsigned long long frac = (unsigned long long)(units % kAtomicPerCoin);
+    snprintf(buf, sizeof(buf), "%llu.%08llu", whole, frac);
+    return std::string(buf);
+}
+
 static bool HexTo32(const std::string& s, uint8_t out[32])
 {
     if (s.size() != 64)
@@ -2939,13 +2949,16 @@ int main(int argc, char** argv)
             const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
             const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
             const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
-            printf("commit ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
+            printf("commit ok round=%llu spends=%zu mints=%zu minted=%llu minted_drpow=%s fees=%llu fees_drpow=%s subsidy=%llu subsidy_drpow=%s miner=%s target=%s\n",
                    (unsigned long long)batch.round,
                    batch.spends.size(),
                    batch.mints.size(),
                    (unsigned long long)minted,
+                   FormatAtomic8(minted).c_str(),
                    (unsigned long long)fees,
+                   FormatAtomic8(fees).c_str(),
                    (unsigned long long)subsidy,
+                   FormatAtomic8(subsidy).c_str(),
                    miner_hex.c_str(),
                    target_hex.c_str());
             BroadcastSyncStatus();
@@ -3121,13 +3134,17 @@ int main(int argc, char** argv)
                 memset(mint.output.range_proof.v, 0, 64);
                 mint.miner_pubkey = signer_id;
                 batch.mints.push_back(mint);
-                Logf(LOG_NORMAL, "[AUTO] prepare round=%llu subsidy=%llu tax_ppm=%llu burn_refill=%llu reserve=%llu mint=%llu target=%s miner=%s\n",
+                Logf(LOG_NORMAL, "[AUTO] prepare round=%llu subsidy=%llu subsidy_drpow=%s tax_ppm=%llu burn_refill=%llu burn_refill_drpow=%s reserve=%llu reserve_drpow=%s mint=%llu mint_drpow=%s target=%s miner=%s\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)subsidy,
+                       FormatAtomic8(subsidy).c_str(),
                        (unsigned long long)TransferTaxPpmForRound(batch.round, economics_policy),
                        (unsigned long long)SumBatchFees(batch),
+                       FormatAtomic8(SumBatchFees(batch)).c_str(),
                        (unsigned long long)reserve_budget,
+                       FormatAtomic8(reserve_budget).c_str(),
                        (unsigned long long)mint.output.value,
+                       FormatAtomic8(mint.output.value).c_str(),
                        Hex32(mint.target).c_str(),
                        Hex32(mint.miner_pubkey).c_str());
 
@@ -3290,13 +3307,16 @@ int main(int argc, char** argv)
                                     const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
                                     const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
                                     const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
-                                    Logf(LOG_NORMAL, "[COMMIT] ok round=%llu spends=%zu mints=%zu minted=%llu fees=%llu subsidy=%llu miner=%s target=%s\n",
+                                    Logf(LOG_NORMAL, "[COMMIT] ok round=%llu spends=%zu mints=%zu minted=%llu minted_drpow=%s fees=%llu fees_drpow=%s subsidy=%llu subsidy_drpow=%s miner=%s target=%s\n",
                                            (unsigned long long)batch.round,
                                            batch.spends.size(),
                                            batch.mints.size(),
                                            (unsigned long long)minted,
+                                           FormatAtomic8(minted).c_str(),
                                            (unsigned long long)fees,
+                                           FormatAtomic8(fees).c_str(),
                                            (unsigned long long)subsidy,
+                                           FormatAtomic8(subsidy).c_str(),
                                            miner_hex.c_str(),
                                            target_hex.c_str());
                                     BroadcastSyncStatus();

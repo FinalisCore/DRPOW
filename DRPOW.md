@@ -57,6 +57,11 @@ The canonical state MUST include at least:
 - mint_budget / reserve accounting used by issuance policy,
 - committed round number and state root.
 
+### 3.1.1 Monetary Unit (Normative)
+- Base unit MUST be atomic units.
+- `1 DRPOW = 100,000,000 atomic units` (8 decimals).
+- All consensus/accounting fields (`total_supply`, `total_minted`, `total_fees_burned`, mint outputs, spend values, fees) MUST be represented in atomic units.
+
 ### 3.2 No-Inflation Invariant
 For every accepted commit at round `r`:
 

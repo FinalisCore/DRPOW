@@ -84,7 +84,7 @@ static void Clamp32(Bytes32* v, const Bytes32& lo, const Bytes32& hi)
 
 EconomicsPolicy DefaultEconomicsPolicy()
 {
-    static const uint64_t kAtomicPerCoin = 1000ULL;
+    static const uint64_t kAtomicPerCoin = 100000000ULL;
     static const uint64_t kRoundSeconds = 20ULL;
     static const uint64_t kYearSeconds = 365ULL * 24ULL * 3600ULL;
     EconomicsPolicy p;
