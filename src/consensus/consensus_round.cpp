@@ -183,6 +183,24 @@ static uint64_t BatchProofCostUnits(const RoundBatch& batch)
     return cost;
 }
 
+static bool ValidateDeterministicMintAmount(const RoundBatch& batch,
+                                            const StateStore* state_store,
+                                            const EconomicsPolicy& policy)
+{
+    if (batch.mints.size() != 1 || batch.round == 0)
+        return false;
+    const uint64_t subsidy = MintSubsidyForRound(batch.round, policy);
+    uint64_t expected_mint = subsidy;
+    if (state_store)
+    {
+        uint64_t mint_budget = 0;
+        if (state_store->ReadMintBudget(&mint_budget) && mint_budget < expected_mint)
+            expected_mint = mint_budget;
+    }
+    const uint64_t minted = batch.mints[0].output.value;
+    return minted == expected_mint;
+}
+
 ConsensusRoundEngine::ConsensusRoundEngine(StateStore* state_store,
                                            const VoteVerifier* vote_verifier,
                                            const ProofVerifier* proof_verifier,
@@ -211,6 +229,8 @@ bool ConsensusRoundEngine::Propose(const RoundBatch& batch)
         return Fail(REJECT_BATCH_STATELESS_INVALID, "stateless batch invalid");
     if (!ValidateBatchEconomics(batch, economics_policy_))
         return Fail(REJECT_ECONOMICS_INVALID, "economics invalid");
+    if (!ValidateDeterministicMintAmount(batch, state_store_, economics_policy_))
+        return Fail(REJECT_ECONOMICS_INVALID, "mint amount invalid");
     if (!ValidateBatchFeePolicy(batch, economics_policy_))
         return Fail(REJECT_FEE_POLICY_INVALID, "fee policy invalid");
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
@@ -242,6 +262,8 @@ bool ConsensusRoundEngine::ValidateAndVote(const RoundBatch& batch, Vote* out_vo
     if (!ValidateBatchStateless(batch))
         return false;
     if (!ValidateBatchEconomics(batch, economics_policy_))
+        return false;
+    if (!ValidateDeterministicMintAmount(batch, state_store_, economics_policy_))
         return false;
     if (!ValidateBatchFeePolicy(batch, economics_policy_))
         return false;
@@ -277,6 +299,8 @@ bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertifica
         return Fail(REJECT_BATCH_STATELESS_INVALID, "stateless batch invalid");
     if (!ValidateBatchEconomics(batch, economics_policy_))
         return Fail(REJECT_ECONOMICS_INVALID, "economics invalid");
+    if (!ValidateDeterministicMintAmount(batch, state_store_, economics_policy_))
+        return Fail(REJECT_ECONOMICS_INVALID, "mint amount invalid");
     if (!ValidateBatchFeePolicy(batch, economics_policy_))
         return Fail(REJECT_FEE_POLICY_INVALID, "fee policy invalid");
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
