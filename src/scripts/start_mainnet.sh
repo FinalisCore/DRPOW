@@ -43,6 +43,13 @@ ensure_default_peers_file() {
   [ -z "${default_peer}" ] && return
   mkdir -p "$(dirname "${PEERS_FILE}")"
   touch "${PEERS_FILE}"
+  # A node must not list itself in peers.
+  if [ -n "${PUBLIC_ENDPOINT}" ]; then
+    sed -i "/^[[:space:]]*${PUBLIC_ENDPOINT//./\\.}[[:space:]]*$/d" "${PEERS_FILE}"
+    if [ "${default_peer}" = "${PUBLIC_ENDPOINT}" ]; then
+      return
+    fi
+  fi
   if ! grep -Eq "^[[:space:]]*${default_peer//./\\.}[[:space:]]*$" "${PEERS_FILE}"; then
     echo "${default_peer}" >> "${PEERS_FILE}"
   fi
@@ -62,6 +69,16 @@ load_bootstrap_peers() {
   fi
   if [ -n "${SEED_PEER}" ]; then
     peers+=("${SEED_PEER}")
+  fi
+  # Never bootstrap to self.
+  if [ -n "${PUBLIC_ENDPOINT}" ]; then
+    local filtered=()
+    local p=""
+    for p in "${peers[@]}"; do
+      [ "${p}" = "${PUBLIC_ENDPOINT}" ] && continue
+      filtered+=("${p}")
+    done
+    peers=("${filtered[@]}")
   fi
   if [ "${#peers[@]}" -eq 0 ]; then
     BOOTSTRAP_PEERS=""
