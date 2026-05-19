@@ -1086,6 +1086,23 @@ int main(int argc, char** argv)
             }
             return false;
         };
+    std::function<void(uint64_t)> PurgeCommittedPending = [&](uint64_t committed_round) {
+        std::vector<std::string> stale_keys;
+        stale_keys.reserve(known_batches.size());
+        for (std::map<std::string, RoundBatch>::const_iterator it = known_batches.begin(); it != known_batches.end(); ++it)
+        {
+            if (it->second.round <= committed_round)
+                stale_keys.push_back(it->first);
+        }
+        for (size_t i = 0; i < stale_keys.size(); ++i)
+        {
+            const std::string& k = stale_keys[i];
+            known_batches.erase(k);
+            known_votes.erase(k);
+            known_vote_ids.erase(k);
+            qc_gate_last_votes.erase(k);
+        }
+    };
     std::function<void()> TryCatchUpFromCache = [&]() {
         if (last_committed_round >= synced_last_round)
             return;
@@ -1170,6 +1187,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
+            PurgeCommittedPending(last_committed_round);
             applied++;
             printf("catchup commit ok round=%llu\n", (unsigned long long)batch.round);
         }
@@ -2466,10 +2484,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
-            known_batches.erase(Bytes32Key(batch.batch_hash));
-            known_votes.erase(Bytes32Key(batch.batch_hash));
-            known_vote_ids.erase(Bytes32Key(batch.batch_hash));
-            qc_gate_last_votes.erase(Bytes32Key(batch.batch_hash));
+            PurgeCommittedPending(last_committed_round);
             const uint64_t minted = SumBatchMintValue(batch);
             const uint64_t fees = SumBatchFees(batch);
             const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
@@ -2861,10 +2876,7 @@ int main(int argc, char** argv)
                                     last_committed_round = batch.round;
                                     last_progress_round = last_committed_round;
                                     last_progress_time = time(NULL);
-                                    known_batches.erase(Bytes32Key(batch.batch_hash));
-                                    known_votes.erase(Bytes32Key(batch.batch_hash));
-                                    known_vote_ids.erase(Bytes32Key(batch.batch_hash));
-                                    qc_gate_last_votes.erase(Bytes32Key(batch.batch_hash));
+                                    PurgeCommittedPending(last_committed_round);
                                     const uint64_t minted = SumBatchMintValue(batch);
                                     const uint64_t fees = SumBatchFees(batch);
                                     const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
