@@ -192,10 +192,16 @@ write_config() {
     JOINER_MODE=1
   fi
   if [ "${JOINER_MODE}" = "1" ]; then
-    if [ -n "${AUTOPROPOSE}" ] && [ "${AUTOPROPOSE}" != "0" ]; then
-      echo "config_override: forcing AUTOPROPOSE=0 because joiner_mode=1 (seed/bootstrap/role follower mode)" >&2
+    # Keep explicit follower/sync nodes as non-mining sync replicas.
+    if [ "${role_lc}" = "follower" ] || [ "${role_lc}" = "sync" ]; then
+      if [ -n "${AUTOPROPOSE}" ] && [ "${AUTOPROPOSE}" != "0" ]; then
+        echo "config_override: forcing AUTOPROPOSE=0 because role=${role_lc} in joiner_mode=1" >&2
+      fi
+      AUTOPROPOSE=0
+    elif [ -z "${AUTOPROPOSE}" ]; then
+      # Open admission: joiners can mine/compete by default.
+      AUTOPROPOSE=1
     fi
-    AUTOPROPOSE=0
   elif [ -z "${AUTOPROPOSE}" ]; then
     AUTOPROPOSE=1
   fi
