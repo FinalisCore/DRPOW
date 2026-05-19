@@ -8,16 +8,9 @@
 
 namespace drpow {
 
-bool HasSupermajority(size_t total_validators, size_t votes_count)
-{
-    if (total_validators == 0)
-        return false;
-    return votes_count >= ((2 * total_validators) / 3 + 1);
-}
-
 bool VoteEligibilityTypeValid(uint8_t t)
 {
-    return t == VOTE_ELIGIBILITY_VALIDATOR_SET || t == VOTE_ELIGIBILITY_POW_RECENT;
+    return t == VOTE_ELIGIBILITY_POW_RECENT;
 }
 
 bool VotePowHashMeetsTarget(const Bytes32& pow_hash, const Bytes32& pow_target)
@@ -41,17 +34,14 @@ static void BuildVotePowPreimage(const Vote& vote, std::vector<uint8_t>* out)
     if (!out)
         return;
     out->clear();
-    // Domain-separate vote PoW from block PoW and any future PoW objects.
     out->push_back('V');
-    out->push_back('P');
     out->push_back('O');
-    out->push_back('W');
+    out->push_back('T');
+    out->push_back('E');
     WriteU64LE(out, vote.round);
     out->insert(out->end(), vote.batch_hash.v, vote.batch_hash.v + 32);
     out->insert(out->end(), vote.validator_id.v, vote.validator_id.v + 32);
-    out->push_back(vote.eligibility_type);
     WriteU64LE(out, vote.pow_nonce);
-    out->insert(out->end(), vote.pow_target.v, vote.pow_target.v + 32);
 }
 
 void BuildVoteSigningMessageV2(const Vote& vote, std::vector<uint8_t>* out)
@@ -76,21 +66,6 @@ bool VerifyVotePowFields(const Vote& vote, std::string* reason)
             *reason = "absent";
         return true;
     }
-    bool target_all_zero = true;
-    for (size_t i = 0; i < 32; ++i)
-    {
-        if (vote.pow_target.v[i] != 0)
-        {
-            target_all_zero = false;
-            break;
-        }
-    }
-    if (target_all_zero)
-    {
-        if (reason)
-            *reason = "target_zero";
-        return false;
-    }
     std::vector<uint8_t> preimage;
     BuildVotePowPreimage(vote, &preimage);
     Bytes32 computed;
@@ -106,7 +81,27 @@ bool VerifyVotePowFields(const Vote& vote, std::string* reason)
             *reason = "hash_mismatch";
         return false;
     }
-    if (!VotePowHashMeetsTarget(vote.pow_hash, vote.pow_target))
+    if (reason)
+        *reason = "ok";
+    return true;
+}
+
+bool VerifyVotePowAgainstTarget(const Vote& vote, const Bytes32& target_round, std::string* reason)
+{
+    std::string local_reason;
+    if (!VerifyVotePowFields(vote, &local_reason))
+    {
+        if (reason)
+            *reason = local_reason;
+        return false;
+    }
+    if (!vote.pow_proof_present)
+    {
+        if (reason)
+            *reason = "missing_pow";
+        return false;
+    }
+    if (!VotePowHashMeetsTarget(vote.pow_hash, target_round))
     {
         if (reason)
             *reason = "hash_above_target";
@@ -117,121 +112,41 @@ bool VerifyVotePowFields(const Vote& vote, std::string* reason)
     return true;
 }
 
-uint64_t TotalVotingPower(const ValidatorEpoch& epoch)
+bool VerifyQuorumCertificatePow(const QuorumCertificate& qc,
+                                uint64_t expected_round,
+                                const Bytes32& expected_batch_hash,
+                                const Bytes32& target_round,
+                                size_t min_votes,
+                                const VoteVerifier& verifier)
 {
-    uint64_t total = 0;
-    for (size_t i = 0; i < epoch.validators.size(); ++i)
-        total += epoch.validators[i].voting_power;
-    return total;
-}
-
-uint64_t VotedPower(const ValidatorEpoch& epoch, const QuorumCertificate& qc)
-{
-    uint64_t voted = 0;
-    std::set<std::string> seen;
-    for (size_t i = 0; i < qc.votes.size(); ++i)
-    {
-        const Vote& v = qc.votes[i];
-        std::string id((const char*)v.validator_id.v, 32);
-        if (seen.count(id))
-            continue;
-        for (size_t j = 0; j < epoch.validators.size(); ++j)
-        {
-            const Validator& val = epoch.validators[j];
-            if (memcmp(val.validator_id.v, v.validator_id.v, 32) == 0)
-            {
-                voted += val.voting_power;
-                seen.insert(id);
-                break;
-            }
-        }
-    }
-    return voted;
-}
-
-bool HasSupermajorityPower(const ValidatorEpoch& epoch, const QuorumCertificate& qc)
-{
-    const uint64_t total = TotalVotingPower(epoch);
-    if (total == 0)
+    if (qc.round != expected_round)
         return false;
-    const uint64_t voted = VotedPower(epoch, qc);
-    return voted * 3 >= total * 2 + 1;
-}
-
-uint64_t VotedPowerTyped(const ValidatorEpoch& epoch,
-                         const QuorumCertificate& qc,
-                         const std::set<std::string>& pow_recent_ids,
-                         uint64_t pow_recent_vote_weight)
-{
-    uint64_t voted = 0;
+    if (memcmp(qc.batch_hash.v, expected_batch_hash.v, 32) != 0)
+        return false;
+    if (qc.votes.size() < min_votes)
+        return false;
     std::set<std::string> seen;
+    size_t valid_votes = 0;
     for (size_t i = 0; i < qc.votes.size(); ++i)
     {
         const Vote& v = qc.votes[i];
+        if (v.round != expected_round)
+            return false;
+        if (memcmp(v.batch_hash.v, expected_batch_hash.v, 32) != 0)
+            return false;
         const std::string id((const char*)v.validator_id.v, 32);
         if (seen.count(id))
-            continue;
-
-        bool in_validator_set = false;
-        uint64_t validator_weight = 0;
-        for (size_t j = 0; j < epoch.validators.size(); ++j)
-        {
-            const Validator& val = epoch.validators[j];
-            if (memcmp(val.validator_id.v, v.validator_id.v, 32) == 0)
-            {
-                in_validator_set = true;
-                validator_weight = val.voting_power;
-                break;
-            }
-        }
-
-        if (in_validator_set)
-        {
-            if (v.eligibility_type != VOTE_ELIGIBILITY_VALIDATOR_SET)
-                continue;
-            voted += validator_weight;
-            seen.insert(id);
-            continue;
-        }
-
-        if (v.eligibility_type != VOTE_ELIGIBILITY_POW_RECENT)
-            continue;
-        if (!pow_recent_ids.count(id))
-            continue;
-        voted += pow_recent_vote_weight;
+            return false;
         seen.insert(id);
+        if (!verifier.VerifyVote(v))
+            return false;
+        if (!VerifyVotePowAgainstTarget(v, target_round, NULL))
+            return false;
+        valid_votes += 1;
     }
-    return voted;
+    return valid_votes >= min_votes;
 }
 
-bool HasSupermajorityPowerTyped(const ValidatorEpoch& epoch,
-                                const QuorumCertificate& qc,
-                                const std::set<std::string>& pow_recent_ids,
-                                uint64_t pow_recent_vote_weight)
-{
-    if (pow_recent_vote_weight == 0)
-        return false;
-    const uint64_t validator_total = TotalVotingPower(epoch);
-    // Prevent denominator inflation: identities already in the validator set
-    // must not be counted again in the PoW-recent bucket.
-    uint64_t overlap_count = 0;
-    for (size_t i = 0; i < epoch.validators.size(); ++i)
-    {
-        const std::string id((const char*)epoch.validators[i].validator_id.v, 32);
-        if (pow_recent_ids.count(id))
-            overlap_count += 1;
-    }
-    const uint64_t pow_unique_count =
-        ((uint64_t)pow_recent_ids.size() > overlap_count)
-            ? ((uint64_t)pow_recent_ids.size() - overlap_count)
-            : 0;
-    const uint64_t pow_total = pow_unique_count * pow_recent_vote_weight;
-    const uint64_t total = validator_total + pow_total;
-    if (total == 0)
-        return false;
-    const uint64_t voted = VotedPowerTyped(epoch, qc, pow_recent_ids, pow_recent_vote_weight);
-    return voted * 3 >= total * 2 + 1;
-}
 
 bool BasicVoteVerifier::VerifyVote(const Vote& vote) const
 {
@@ -257,97 +172,6 @@ bool BasicVoteVerifier::VerifyVote(const Vote& vote) const
                                           vote.signature.size());
 }
 
-bool VerifyQuorumCertificate(const ValidatorEpoch& epoch,
-                             const QuorumCertificate& qc,
-                             uint64_t expected_round,
-                             const Bytes32& expected_batch_hash,
-                             const VoteVerifier& verifier)
-{
-    if (qc.round != expected_round)
-        return false;
-    if (memcmp(qc.batch_hash.v, expected_batch_hash.v, 32) != 0)
-        return false;
-    if (!HasSupermajorityPower(epoch, qc))
-        return false;
-
-    std::set<std::string> seen;
-    for (size_t i = 0; i < qc.votes.size(); ++i)
-    {
-        const Vote& v = qc.votes[i];
-        if (v.round != expected_round)
-            return false;
-        if (memcmp(v.batch_hash.v, expected_batch_hash.v, 32) != 0)
-            return false;
-        if (!VoteEligibilityTypeValid(v.eligibility_type))
-            return false;
-        std::string id((const char*)v.validator_id.v, 32);
-        if (seen.count(id))
-            return false;
-        seen.insert(id);
-        if (!verifier.VerifyVote(v))
-            return false;
-    }
-    return true;
-}
-
-bool VerifyQuorumCertificateTyped(const ValidatorEpoch& epoch,
-                                  const QuorumCertificate& qc,
-                                  uint64_t expected_round,
-                                  const Bytes32& expected_batch_hash,
-                                  const std::set<std::string>& pow_recent_ids,
-                                  uint64_t pow_recent_vote_weight,
-                                  const VoteVerifier& verifier)
-{
-    if (qc.round != expected_round)
-        return false;
-    if (memcmp(qc.batch_hash.v, expected_batch_hash.v, 32) != 0)
-        return false;
-    if (!HasSupermajorityPowerTyped(epoch, qc, pow_recent_ids, pow_recent_vote_weight))
-        return false;
-
-    std::set<std::string> seen;
-    for (size_t i = 0; i < qc.votes.size(); ++i)
-    {
-        const Vote& v = qc.votes[i];
-        if (v.round != expected_round)
-            return false;
-        if (memcmp(v.batch_hash.v, expected_batch_hash.v, 32) != 0)
-            return false;
-        if (!VoteEligibilityTypeValid(v.eligibility_type))
-            return false;
-
-        const std::string id((const char*)v.validator_id.v, 32);
-        if (seen.count(id))
-            return false;
-        seen.insert(id);
-
-        bool in_validator_set = false;
-        for (size_t j = 0; j < epoch.validators.size(); ++j)
-        {
-            if (memcmp(epoch.validators[j].validator_id.v, v.validator_id.v, 32) == 0)
-            {
-                in_validator_set = true;
-                break;
-            }
-        }
-        if (in_validator_set)
-        {
-            if (v.eligibility_type != VOTE_ELIGIBILITY_VALIDATOR_SET)
-                return false;
-        }
-        else
-        {
-            if (v.eligibility_type != VOTE_ELIGIBILITY_POW_RECENT)
-                return false;
-            if (!pow_recent_ids.count(id))
-                return false;
-        }
-
-        if (!verifier.VerifyVote(v))
-            return false;
-    }
-    return true;
-}
 
 std::vector<uint8_t> SerializeQuorumCertificate(const QuorumCertificate& qc)
 {

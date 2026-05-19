@@ -8,7 +8,6 @@
 #include "drpow_params.h"
 #include "proof_verifier.h"
 #include "registry_state_store.h"
-#include "static_validator_set.h"
 #include "drpow/tx_codec.h"
 
 using namespace drpow;
@@ -86,11 +85,6 @@ int main()
     Bytes32 other_id;
     crypto->PublicFromPrivateEd25519(other_priv, other_id.v);
 
-    std::vector<Validator> vals(1);
-    vals[0].validator_id = signer_id;
-    vals[0].voting_power = 1;
-    StaticValidatorSet vset(1000, vals);
-
     RegistryStateStore store("/tmp/drpow_elig_registry.bin",
                              "/tmp/drpow_elig_commit.log",
                              "/tmp/drpow_elig_evidence.log",
@@ -98,7 +92,7 @@ int main()
                              crypto.get(),
                              signer_priv,
                              &signer_id);
-    ConsensusRoundEngine engine(&store, &vset, &vote_verifier, &proof_verifier);
+    ConsensusRoundEngine engine(&store, &vote_verifier, &proof_verifier);
 
     MintTx mint;
     mint.output.value = 1;

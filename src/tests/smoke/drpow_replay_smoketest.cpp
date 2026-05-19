@@ -8,7 +8,6 @@
 #include "drpow_params.h"
 #include "proof_verifier.h"
 #include "registry_state_store.h"
-#include "static_validator_set.h"
 #include "drpow/tx_codec.h"
 
 using namespace drpow;
@@ -90,20 +89,18 @@ int main()
     Bytes32 commit_signer_id;
     crypto_backend->PublicFromPrivateEd25519(commit_signer_priv, commit_signer_id.v);
 
-    std::vector<Validator> vals(4);
-    std::vector< std::vector<uint8_t> > validator_privs(vals.size(), std::vector<uint8_t>(32, 0));
-    for (size_t i = 0; i < vals.size(); ++i)
+    std::vector<Bytes32> validator_ids(4);
+    std::vector< std::vector<uint8_t> > validator_privs(validator_ids.size(), std::vector<uint8_t>(32, 0));
+    for (size_t i = 0; i < validator_ids.size(); ++i)
     {
         for (int j = 0; j < 32; ++j)
             validator_privs[i][j] = (uint8_t)(70 + i + j);
-        crypto_backend->PublicFromPrivateEd25519(&validator_privs[i][0], vals[i].validator_id.v);
-        vals[i].voting_power = 1;
+        crypto_backend->PublicFromPrivateEd25519(&validator_privs[i][0], validator_ids[i].v);
     }
-    StaticValidatorSet vset(1000, vals);
 
     {
         RegistryStateStore store(reg, log, evd, &proof_verifier, crypto_backend.get(), commit_signer_priv, &commit_signer_id);
-        ConsensusRoundEngine engine(&store, &vset, &vote_verifier, &proof_verifier);
+        ConsensusRoundEngine engine(&store, &vote_verifier, &proof_verifier);
 
         MintTx mint;
         mint.output.value = 50;
@@ -113,7 +110,7 @@ int main()
         mint.mint_nonce = 999;
         for (int i = 0; i < 32; ++i)
             mint.target.v[i] = 0xff;
-        mint.miner_pubkey = vals[0].validator_id;
+        mint.miner_pubkey = validator_ids[0];
         mint.signature = BuildMintSig(*crypto_backend, &validator_privs[0][0], mint);
 
         RoundBatch batch;
@@ -129,13 +126,13 @@ int main()
         QuorumCertificate qc;
         qc.round = 1;
         qc.batch_hash = batch.batch_hash;
-        for (size_t i = 0; i < vals.size(); ++i)
+        for (size_t i = 0; i < validator_ids.size(); ++i)
         {
             Vote v;
             v.round = 1;
             v.batch_hash = batch.batch_hash;
-            v.validator_id = vals[i].validator_id;
-            v.eligibility_type = VOTE_ELIGIBILITY_VALIDATOR_SET;
+            v.validator_id = validator_ids[i];
+            v.eligibility_type = VOTE_ELIGIBILITY_POW_RECENT;
             v.signature = BuildVoteSig(*crypto_backend, &validator_privs[i][0], v.round, v.batch_hash, v.validator_id, v.eligibility_type);
             qc.votes.push_back(v);
         }

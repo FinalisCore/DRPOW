@@ -24,6 +24,7 @@ struct DrpowParams {
     static const uint64_t kPowRecentVoteWeight = 1;
     static const uint64_t kPowRecentMinWins = 2;
     static const uint64_t kPowRecentMinWorkUnits = 3000;
+    static const uint64_t kMinQcVotes = 2;
 
     static const uint64_t kTargetEpochRounds = kEpochLengthRounds;
     static const uint64_t kGenesisBootstrapRounds = 10;

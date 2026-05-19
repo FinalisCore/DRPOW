@@ -8,7 +8,6 @@
 #include "drpow_params.h"
 #include "proof_verifier.h"
 #include "registry_state_store.h"
-#include "static_validator_set.h"
 #include "drpow/tx_codec.h"
 
 using namespace drpow;
@@ -80,11 +79,6 @@ int main()
     Bytes32 signer_id;
     crypto->PublicFromPrivateEd25519(signer_priv, signer_id.v);
 
-    std::vector<Validator> vals(1);
-    vals[0].validator_id = signer_id;
-    vals[0].voting_power = 1;
-    StaticValidatorSet vset(1000, vals);
-
     RegistryStateStore store("/tmp/drpow_budget_registry.bin",
                              "/tmp/drpow_budget_commit.log",
                              "/tmp/drpow_budget_evidence.log",
@@ -136,7 +130,7 @@ int main()
 
     EconomicsPolicy low_budget = DefaultEconomicsPolicy();
     low_budget.max_proof_cost_per_round = 1024;
-    ConsensusRoundEngine low_engine(&store, &vset, &vote_verifier, &proof_verifier, &low_budget);
+    ConsensusRoundEngine low_engine(&store, &vote_verifier, &proof_verifier, &low_budget);
     if (low_engine.Propose(batch))
     {
         printf("budget_reject_missing\n");
@@ -150,7 +144,7 @@ int main()
 
     EconomicsPolicy high_budget = DefaultEconomicsPolicy();
     high_budget.max_proof_cost_per_round = 64 * 1024;
-    ConsensusRoundEngine high_engine(&store, &vset, &vote_verifier, &proof_verifier, &high_budget);
+    ConsensusRoundEngine high_engine(&store, &vote_verifier, &proof_verifier, &high_budget);
     if (!high_engine.Propose(batch))
     {
         printf("budget_accept_failed code=%d\n", (int)high_engine.last_reject_code());

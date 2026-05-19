@@ -10,7 +10,6 @@
 #include "proof_verifier.h"
 #include "state_store.h"
 #include "drpow/tx_types.h"
-#include "validator_set.h"
 
 namespace drpow {
 
@@ -54,7 +53,6 @@ struct RoundBatch {
 class ConsensusRoundEngine {
 public:
     ConsensusRoundEngine(StateStore* state_store,
-                         const ValidatorSet* validator_set,
                          const VoteVerifier* vote_verifier,
                          const ProofVerifier* proof_verifier,
                          const EconomicsPolicy* economics_policy = NULL);
@@ -69,7 +67,6 @@ public:
 private:
     bool Fail(ConsensusRejectCode code, const char* message);
     StateStore* state_store_;
-    const ValidatorSet* validator_set_;
     const VoteVerifier* vote_verifier_;
     const ProofVerifier* proof_verifier_;
     EconomicsPolicy economics_policy_;
