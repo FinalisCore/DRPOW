@@ -2862,6 +2862,13 @@ int main(int argc, char** argv)
             vote.pow_nonce = 0;
             vote.pow_target = Bytes32();
             vote.pow_hash = Bytes32();
+            if (!batch.mints.empty())
+            {
+                vote.pow_proof_present = 1;
+                vote.pow_nonce = batch.mints[0].mint_nonce;
+                vote.pow_target = batch.mints[0].target;
+                vote.pow_hash = batch.batch_hash;
+            }
             std::vector<uint8_t> m;
             BuildVoteSigningMessageV2(vote, &m);
             if (!crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))
@@ -3493,6 +3500,13 @@ int main(int argc, char** argv)
                         vote.pow_nonce = 0;
                         vote.pow_target = Bytes32();
                         vote.pow_hash = Bytes32();
+                        if (!batch.mints.empty())
+                        {
+                            vote.pow_proof_present = 1;
+                            vote.pow_nonce = batch.mints[0].mint_nonce;
+                            vote.pow_target = batch.mints[0].target;
+                            vote.pow_hash = batch.batch_hash;
+                        }
                         std::vector<uint8_t> m;
                         BuildVoteSigningMessageV2(vote, &m);
                         if (crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))

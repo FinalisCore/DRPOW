@@ -276,22 +276,46 @@ bool ParseVotePayload(const std::vector<uint8_t>& in, Vote* out)
     v.eligibility_type = in[off++];
     if (!VoteEligibilityTypeValid(v.eligibility_type))
         return false;
-    if (off + 1 > in.size())
-        return false;
-    v.pow_proof_present = in[off++];
-    if (v.pow_proof_present > 1)
-        return false;
-    if (!ReadU64LELocal(&in[0], in.size(), &off, &v.pow_nonce))
-        return false;
-    if (!ReadBytesLocal(&in[0], in.size(), &off, v.pow_target.v, 32))
-        return false;
-    if (!ReadBytesLocal(&in[0], in.size(), &off, v.pow_hash.v, 32))
-        return false;
-    if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))
-        return false;
-    if (sig_n > in.size() || off + (size_t)sig_n != in.size())
-        return false;
-    v.signature.assign(in.begin() + off, in.end());
+    const size_t after_elig_off = off;
+
+    // Try extended (v2) vote payload with PoW metadata first.
+    bool parsed = false;
+    {
+        size_t off2 = after_elig_off;
+        Vote vv = v;
+        uint64_t sig2 = 0;
+        if (off2 + 1 <= in.size())
+        {
+            vv.pow_proof_present = in[off2++];
+            if (vv.pow_proof_present <= 1 &&
+                ReadU64LELocal(&in[0], in.size(), &off2, &vv.pow_nonce) &&
+                ReadBytesLocal(&in[0], in.size(), &off2, vv.pow_target.v, 32) &&
+                ReadBytesLocal(&in[0], in.size(), &off2, vv.pow_hash.v, 32) &&
+                ReadU64LELocal(&in[0], in.size(), &off2, &sig2) &&
+                sig2 <= in.size() &&
+                off2 + (size_t)sig2 == in.size())
+            {
+                vv.signature.assign(in.begin() + off2, in.end());
+                v = vv;
+                parsed = true;
+            }
+        }
+    }
+
+    // Fallback legacy (v1) vote payload without PoW metadata.
+    if (!parsed)
+    {
+        off = after_elig_off;
+        if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))
+            return false;
+        if (sig_n > in.size() || off + (size_t)sig_n != in.size())
+            return false;
+        v.pow_proof_present = 0;
+        v.pow_nonce = 0;
+        v.pow_target = Bytes32();
+        v.pow_hash = Bytes32();
+        v.signature.assign(in.begin() + off, in.end());
+    }
     *out = v;
     return true;
 }
@@ -350,20 +374,42 @@ static bool ParseQcLocal(const uint8_t* data, size_t n, size_t* off, QuorumCerti
         qc.votes[i].eligibility_type = data[(*off)++];
         if (!VoteEligibilityTypeValid(qc.votes[i].eligibility_type))
             return false;
-        if (*off + 1 > n)
-            return false;
-        qc.votes[i].pow_proof_present = data[(*off)++];
-        if (qc.votes[i].pow_proof_present > 1)
-            return false;
-        if (!ReadU64LELocal(data, n, off, &qc.votes[i].pow_nonce))
-            return false;
-        if (!ReadBytesLocal(data, n, off, qc.votes[i].pow_target.v, 32))
-            return false;
-        if (!ReadBytesLocal(data, n, off, qc.votes[i].pow_hash.v, 32))
-            return false;
-        if (!ReadVecLocal(data, n, off, &sig))
-            return false;
-        qc.votes[i].signature.swap(sig);
+        const size_t after_elig_off = *off;
+
+        // Try extended vote encoding first.
+        bool parsed = false;
+        {
+            size_t off2 = *off;
+            Vote vv = qc.votes[i];
+            if (off2 + 1 <= n)
+            {
+                vv.pow_proof_present = data[off2++];
+                if (vv.pow_proof_present <= 1 &&
+                    ReadU64LELocal(data, n, &off2, &vv.pow_nonce) &&
+                    ReadBytesLocal(data, n, &off2, vv.pow_target.v, 32) &&
+                    ReadBytesLocal(data, n, &off2, vv.pow_hash.v, 32) &&
+                    ReadVecLocal(data, n, &off2, &sig))
+                {
+                    vv.signature.swap(sig);
+                    qc.votes[i] = vv;
+                    *off = off2;
+                    parsed = true;
+                }
+            }
+        }
+
+        // Legacy vote encoding fallback.
+        if (!parsed)
+        {
+            *off = after_elig_off;
+            qc.votes[i].pow_proof_present = 0;
+            qc.votes[i].pow_nonce = 0;
+            qc.votes[i].pow_target = Bytes32();
+            qc.votes[i].pow_hash = Bytes32();
+            if (!ReadVecLocal(data, n, off, &sig))
+                return false;
+            qc.votes[i].signature.swap(sig);
+        }
     }
     *out = qc;
     return true;
