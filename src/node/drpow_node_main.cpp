@@ -2108,6 +2108,44 @@ int main(int argc, char** argv)
         *bucket -= cost;
         return true;
     };
+    uint64_t last_sync_only_skip_vote_round_logged = 0;
+    uint64_t last_sync_only_skip_commit_round_logged = 0;
+    auto log_sync_only_skip_vote = [&](uint64_t round,
+                                       const std::string& signer_hex,
+                                       const std::string& reason,
+                                       bool pow_stats_present,
+                                       const PowRecentEligibilityStats& pow_stats) {
+        if (round == last_sync_only_skip_vote_round_logged)
+            return;
+        last_sync_only_skip_vote_round_logged = round;
+        printf("sync_only skip_vote round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
+               (unsigned long long)round,
+               signer_hex.c_str(),
+               reason.c_str(),
+               pow_stats_present ? 1 : 0,
+               (unsigned long long)pow_stats.wins,
+               (unsigned long long)pow_stats.weighted_work_units,
+               (unsigned long long)DrpowParams::kPowRecentMinWins,
+               (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
+    };
+    auto log_sync_only_skip_commit = [&](uint64_t round,
+                                         const std::string& signer_hex,
+                                         const std::string& reason,
+                                         bool pow_stats_present,
+                                         const PowRecentEligibilityStats& pow_stats) {
+        if (round == last_sync_only_skip_commit_round_logged)
+            return;
+        last_sync_only_skip_commit_round_logged = round;
+        printf("sync_only skip_commit_broadcast round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
+               (unsigned long long)round,
+               signer_hex.c_str(),
+               reason.c_str(),
+               pow_stats_present ? 1 : 0,
+               (unsigned long long)pow_stats.wins,
+               (unsigned long long)pow_stats.weighted_work_units,
+               (unsigned long long)DrpowParams::kPowRecentMinWins,
+               (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
+    };
     reactor.SetMessageHandler([&](int peer_fd, const WireEnvelope& env) {
         if (env.payload_len != env.payload.size())
         {
@@ -2430,10 +2468,19 @@ int main(int argc, char** argv)
             }
             if (advertised_round > last_committed_round + 1)
             {
-                printf("drop peer_list future_round adv=%llu local=%llu\n",
-                       (unsigned long long)advertised_round,
-                       (unsigned long long)last_committed_round);
-                return;
+                if (last_committed_round == 0)
+                {
+                    printf("accept peer_list future_round_bootstrap adv=%llu local=%llu\n",
+                           (unsigned long long)advertised_round,
+                           (unsigned long long)last_committed_round);
+                }
+                else
+                {
+                    printf("drop peer_list future_round adv=%llu local=%llu\n",
+                           (unsigned long long)advertised_round,
+                           (unsigned long long)last_committed_round);
+                    return;
+                }
             }
             CanonicalizePeerList(&peers);
             std::vector<uint8_t> sign_msg;
@@ -2527,6 +2574,12 @@ int main(int argc, char** argv)
             peer_last_round[peer_fd] = peer_round;
             if (peer_round > last_committed_round)
             {
+                if (peer_round > synced_last_round)
+                {
+                    synced_last_round = peer_round;
+                    (void)SaveSyncedTipFile(sync_tip_file, synced_last_round, synced_state_root);
+                    printf("sync_tip observed round=%llu\n", (unsigned long long)synced_last_round);
+                }
                 printf("sync_needed peer=%d peer_round=%llu local=%llu\n",
                        peer_fd,
                        (unsigned long long)peer_round,
@@ -2653,7 +2706,34 @@ int main(int argc, char** argv)
                     max_round = round;
             }
             if (accepted == 0)
+            {
+                // Fallback for late joiners: if a full-history request from round 1
+                // returns empty, ask for a recent window near observed tip.
+                if (last_committed_round == 0 && from_round == 1 && synced_last_round > 1)
+                {
+                    uint64_t retry_from = (synced_last_round > 63) ? (synced_last_round - 63) : 1;
+                    if (retry_from > 1)
+                    {
+                        printf("sync_retry_window from=%llu observed_tip=%llu\n",
+                               (unsigned long long)retry_from,
+                               (unsigned long long)synced_last_round);
+                        std::vector<uint8_t> req_payload;
+                        if (SerializeSyncRequestPayload(retry_from, 64, &req_payload))
+                        {
+                            WireEnvelope req;
+                            req.magic = WireMagicMainnet();
+                            req.version = 1;
+                            req.msg_type = WIRE_MSG_SYNC_REQUEST;
+                            req.payload_len = (uint32_t)req_payload.size();
+                            req.unix_ms = 0;
+                            req.payload_hash = Bytes32();
+                            req.payload.swap(req_payload);
+                            (void)reactor.Broadcast(req);
+                        }
+                    }
+                }
                 return;
+            }
             if (max_round > synced_last_round)
             {
                 synced_last_round = max_round;
@@ -2773,15 +2853,7 @@ int main(int argc, char** argv)
             {
                 PowRecentEligibilityStats local_pow_stats;
                 const bool have_pow_stats = GetPowEligibilityStatsForRound(signer_id, batch.round, &local_pow_stats);
-                printf("sync_only skip_vote round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
-                       (unsigned long long)batch.round,
-                       Hex32(signer_id).c_str(),
-                       local_elig_reason.c_str(),
-                       have_pow_stats ? 1 : 0,
-                       (unsigned long long)local_pow_stats.wins,
-                       (unsigned long long)local_pow_stats.weighted_work_units,
-                       (unsigned long long)DrpowParams::kPowRecentMinWins,
-                       (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
+                log_sync_only_skip_vote(batch.round, Hex32(signer_id), local_elig_reason, have_pow_stats, local_pow_stats);
                 return;
             }
             vote.validator_id = signer_id;
@@ -2948,15 +3020,7 @@ int main(int argc, char** argv)
                 (void)ResolveVoteEligibilityForRoundVerbose(signer_id, itb->second.round, &local_vote_type, &local_elig_reason);
                 PowRecentEligibilityStats local_pow_stats;
                 const bool have_pow_stats = GetPowEligibilityStatsForRound(signer_id, itb->second.round, &local_pow_stats);
-                printf("sync_only skip_commit_broadcast round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
-                       (unsigned long long)itb->second.round,
-                       Hex32(signer_id).c_str(),
-                       local_elig_reason.c_str(),
-                       have_pow_stats ? 1 : 0,
-                       (unsigned long long)local_pow_stats.wins,
-                       (unsigned long long)local_pow_stats.weighted_work_units,
-                       (unsigned long long)DrpowParams::kPowRecentMinWins,
-                       (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
+                log_sync_only_skip_commit(itb->second.round, Hex32(signer_id), local_elig_reason, have_pow_stats, local_pow_stats);
                 return;
             }
             std::vector<uint8_t> commit_payload;
@@ -3393,15 +3457,7 @@ int main(int argc, char** argv)
                     {
                         PowRecentEligibilityStats local_pow_stats;
                         const bool have_pow_stats = GetPowEligibilityStatsForRound(signer_id, batch.round, &local_pow_stats);
-                        printf("sync_only skip_vote round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
-                               (unsigned long long)batch.round,
-                               Hex32(signer_id).c_str(),
-                               local_elig_reason.c_str(),
-                               have_pow_stats ? 1 : 0,
-                               (unsigned long long)local_pow_stats.wins,
-                               (unsigned long long)local_pow_stats.weighted_work_units,
-                               (unsigned long long)DrpowParams::kPowRecentMinWins,
-                               (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
+                        log_sync_only_skip_vote(batch.round, Hex32(signer_id), local_elig_reason, have_pow_stats, local_pow_stats);
                     }
                     else
                     {
