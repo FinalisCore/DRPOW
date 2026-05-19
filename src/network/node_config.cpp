@@ -57,7 +57,6 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     cfg.duration_sec = 15;
     cfg.autopropose = 0;
     cfg.autopropose_interval_sec = 3;
-    cfg.joiner_mode = 0;
     cfg.network_magic = 0x52504f57u;
     cfg.log_level = "normal";
 
@@ -93,8 +92,6 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
             cfg.autopropose = atoi(v.c_str());
         else if (k == "autopropose_interval_sec")
             cfg.autopropose_interval_sec = atoi(v.c_str());
-        else if (k == "joiner_mode")
-            cfg.joiner_mode = atoi(v.c_str());
         else if (k == "network_magic_hex")
         {
             if (!ParseU32Hex(v, &cfg.network_magic))
@@ -156,7 +153,6 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     }
     if (cfg.autopropose_interval_sec <= 0)
         cfg.autopropose_interval_sec = 3;
-    cfg.joiner_mode = (cfg.joiner_mode != 0) ? 1 : 0;
     if (cfg.network_magic == 0)
     {
         if (err)
