@@ -15,12 +15,12 @@ AUTOPROPOSE="${AUTOPROPOSE:-}"
 AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-20}"
 DURATION_SEC="${DURATION_SEC:-0}"
 LOG_LEVEL="${LOG_LEVEL:-normal}"
-PEERS_FILE="${PEERS_FILE:-${DRPOW_HOME}/peers.txt}"
 NODE_ROLE="${NODE_ROLE:-auto}"
 DEFAULT_BOOTSTRAP_PEER="${DEFAULT_BOOTSTRAP_PEER:-${DEFAULT_SEED_PEER}}"
 
 CONFIG_DIR="${DRPOW_HOME}/config"
 DATA_DIR="${DATA_DIR:-${DRPOW_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
+PEERS_FILE="${PEERS_FILE:-${DATA_DIR}/peers.txt}"
 KEY_DIR="${DRPOW_HOME}/keys"
 KEY_FILE="${KEY_FILE:-${KEY_DIR}/node_signer_privkey.hex}"
 CONF_FILE="${RPOV_NODE_CONFIG:-${CONFIG_DIR}/${NETWORK}.conf}"
@@ -40,6 +40,11 @@ need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command
 
 ensure_default_peers_file() {
   local default_peer="${DEFAULT_BOOTSTRAP_PEER}"
+  local role_lc="$(echo "${NODE_ROLE}" | tr '[:upper:]' '[:lower:]')"
+  if [ -z "${SEED_PEER}" ] && [ "${role_lc}" = "leader" ]; then
+    # Explicit seedless leader bootstrap should not inherit or auto-add peers.
+    return
+  fi
   [ -z "${default_peer}" ] && return
   mkdir -p "$(dirname "${PEERS_FILE}")"
   touch "${PEERS_FILE}"
