@@ -3210,7 +3210,10 @@ int main(int argc, char** argv)
         const bool proposer_eligible =
             IsValidatorForRound(signer_id, target_round) ||
             IsPowEligibleForRound(signer_id, target_round);
-        const bool joiner_admission_ok = (cfg.joiner_mode == 0) || proposer_eligible;
+        // Open admission: if node is configured to autopropose, allow it to
+        // attempt PoW participation even before it has validator/pow_recent status.
+        // Pure sync replicas keep AUTOPROPOSE=0 via scripts.
+        const bool joiner_admission_ok = (cfg.joiner_mode == 0) || (cfg.autopropose != 0);
         if (cfg.autopropose != 0 && !joiner_admission_ok)
             Logf(LOG_DEBUG, "joiner_gate skip_autopropose round=%llu eligible=%d synced=%llu local=%llu\n",
                  (unsigned long long)target_round,
