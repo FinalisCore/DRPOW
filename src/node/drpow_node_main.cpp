@@ -3088,6 +3088,9 @@ int main(int argc, char** argv)
         const bool is_synced_or_standalone =
             (last_committed_round >= synced_last_round) &&
             (!have_peers || synced_last_round > 0 || !any_peer_progress);
+        // Leader-mode nodes (joiner_mode=0) must not stall on sync watermark
+        // bookkeeping while they are the primary proposer in bootstrap phase.
+        const bool autopropose_sync_gate_ok = (cfg.joiner_mode == 0) ? true : is_synced_or_standalone;
         const uint64_t target_round = last_committed_round + 1;
         const bool proposer_eligible =
             IsValidatorForRound(signer_id, target_round) ||
@@ -3100,7 +3103,7 @@ int main(int argc, char** argv)
                  (unsigned long long)synced_last_round,
                  (unsigned long long)last_committed_round);
         if (cfg.autopropose != 0 &&
-            is_synced_or_standalone &&
+            autopropose_sync_gate_ok &&
             joiner_admission_ok &&
             (time(NULL) - last_autopropose_tick) >= dynamic_autopropose_interval_sec)
         {
