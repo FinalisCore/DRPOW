@@ -16,6 +16,7 @@ struct NodeConfig {
     int autopropose;
     int autopropose_interval_sec;
     uint32_t network_magic;
+    int pow_target_prefix_bytes;
     std::vector<std::string> validator_pubkeys_hex;
     std::string signer_privkey_hex;
     std::string genesis_hash_hex;

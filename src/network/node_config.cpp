@@ -58,6 +58,7 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     cfg.autopropose = 0;
     cfg.autopropose_interval_sec = 3;
     cfg.network_magic = 0x52504f57u;
+    cfg.pow_target_prefix_bytes = -1;
     cfg.log_level = "normal";
 
     std::ifstream in(path.c_str());
@@ -101,6 +102,8 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
                 return false;
             }
         }
+        else if (k == "pow_target_prefix_bytes")
+            cfg.pow_target_prefix_bytes = atoi(v.c_str());
         else if (k == "signer_privkey_hex")
             cfg.signer_privkey_hex = v;
         else if (k == "genesis_hash_hex")
@@ -157,6 +160,12 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     {
         if (err)
             *err = "network_magic_hex cannot be zero";
+        return false;
+    }
+    if (cfg.pow_target_prefix_bytes < -1 || cfg.pow_target_prefix_bytes > 31)
+    {
+        if (err)
+            *err = "pow_target_prefix_bytes must be -1..31";
         return false;
     }
     for (size_t i = 0; i < cfg.validator_pubkeys_hex.size(); ++i)

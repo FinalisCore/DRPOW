@@ -902,6 +902,14 @@ int main(int argc, char** argv)
     BasicVoteVerifier vote_verifier(crypto.get());
 
     EconomicsPolicy economics_policy = DefaultEconomicsPolicy();
+    if (cfg.pow_target_prefix_bytes >= 0)
+    {
+        // Operator override for testnet tuning: set N leading zero bytes in max_target,
+        // keep remaining bytes at 0xff (e.g. N=1 => 00ff.., N=2 => 0000ff..).
+        memset(economics_policy.max_target.v, 0xff, 32);
+        for (int i = 0; i < cfg.pow_target_prefix_bytes; ++i)
+            economics_policy.max_target.v[i] = 0x00;
+    }
 
     std::string registry = cfg.data_dir + "/registry.bin";
     std::string commitlog = cfg.data_dir + "/commit.log";
@@ -2593,6 +2601,10 @@ int main(int argc, char** argv)
     }
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] voting_mode=pow_only\n");
+    Logf(LOG_NORMAL,
+         "[BOOT] pow_target_prefix_bytes=%d max_target=%s\n",
+         cfg.pow_target_prefix_bytes,
+         Hex32(economics_policy.max_target).c_str());
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
     Logf(LOG_NORMAL, "[BOOT] sync_policy=sync_first\n");
     Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
@@ -2911,8 +2923,9 @@ int main(int argc, char** argv)
                 // Bitcoin-like loop: try many nonces each interval, stop when target is met
                 // or when we hit bounded CPU/work limits for this tick.
                 const uint64_t pow_start_ms = NowMonotonicMs();
-                const uint64_t pow_time_budget_ms = 1500; // keep node responsive
-                const uint64_t pow_max_attempts = 200000; // hard cap per interval
+                // With stricter targets we allow a few seconds of local search per tick.
+                const uint64_t pow_time_budget_ms = 6000; // keep node responsive while allowing deeper search
+                const uint64_t pow_max_attempts = 2000000; // hard cap per interval
                 uint64_t pow_attempts = 0;
                 bool pow_found = false;
                 uint64_t nonce_cursor = ((uint64_t)time(NULL) << 32) ^ ((uint64_t)getpid() << 16) ^ batch.round;
