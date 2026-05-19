@@ -3127,6 +3127,7 @@ int main(int argc, char** argv)
     time_t last_log_rotate_tick = start;
     int dynamic_autopropose_interval_sec = cfg.autopropose_interval_sec > 0 ? cfg.autopropose_interval_sec : 1;
     size_t dynamic_max_spends_per_round = economics_policy.max_spends_per_round;
+    bool joiner_sync_first_prev = false;
     while (true)
     {
         reactor.PollOnce();
@@ -3203,9 +3204,27 @@ int main(int argc, char** argv)
         const bool is_synced_or_standalone =
             (last_committed_round >= synced_last_round) &&
             (!have_peers || synced_last_round > 0 || !any_peer_progress);
-        // Leader-mode nodes (joiner_mode=0) must not stall on sync watermark
-        // bookkeeping while they are the primary proposer in bootstrap phase.
-        const bool autopropose_sync_gate_ok = (cfg.joiner_mode == 0) ? true : is_synced_or_standalone;
+        // Sync-first policy for joiners: fully (or near-fully) catch up before mining.
+        // This keeps late joiners deterministic and avoids wasting work on stale rounds.
+        const uint64_t kJoinerSyncFirstLag = 3;
+        const uint64_t lag_to_sync = (synced_last_round > last_committed_round)
+                                         ? (synced_last_round - last_committed_round)
+                                         : 0;
+        const bool joiner_sync_first =
+            (cfg.joiner_mode != 0) &&
+            ((last_committed_round == 0 && synced_last_round > 0) || (lag_to_sync > kJoinerSyncFirstLag));
+        if (cfg.joiner_mode != 0 && joiner_sync_first != joiner_sync_first_prev)
+        {
+            Logf(LOG_NORMAL, "[JOINER] mode=%s local=%llu synced=%llu lag=%llu threshold=%llu\n",
+                   joiner_sync_first ? "sync_first" : "open_mining",
+                   (unsigned long long)last_committed_round,
+                   (unsigned long long)synced_last_round,
+                   (unsigned long long)lag_to_sync,
+                   (unsigned long long)kJoinerSyncFirstLag);
+            joiner_sync_first_prev = joiner_sync_first;
+        }
+        // Leader-mode nodes (joiner_mode=0) must not stall on sync watermark bookkeeping.
+        const bool autopropose_sync_gate_ok = (cfg.joiner_mode == 0) ? true : (is_synced_or_standalone && !joiner_sync_first);
         const uint64_t target_round = last_committed_round + 1;
         const bool proposer_eligible =
             IsValidatorForRound(signer_id, target_round) ||
