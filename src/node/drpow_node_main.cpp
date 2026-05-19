@@ -353,6 +353,35 @@ static bool BuildBatchHashLocal(const RoundBatch& batch, Bytes32* out)
     return Sha256(encoded, out);
 }
 
+static void HalveTargetLocal(const Bytes32& in, Bytes32* out)
+{
+    if (!out)
+        return;
+    *out = in;
+    uint16_t carry = 0;
+    for (int i = 0; i < 32; ++i)
+    {
+        const uint16_t cur = (uint16_t)(carry * 256u + out->v[i]);
+        out->v[i] = (uint8_t)(cur / 2u);
+        carry = (uint16_t)(cur % 2u);
+    }
+}
+
+static bool ComputeProposerPowHashLocal(const RoundBatch& batch,
+                                        const Bytes32& parent_root,
+                                        Bytes32* out_hash)
+{
+    if (!out_hash || batch.mints.empty())
+        return false;
+    std::vector<uint8_t> preimage;
+    WriteU64LE(&preimage, batch.round);
+    WriteBytes32(&preimage, parent_root);
+    WriteBytes32(&preimage, batch.batch_hash);
+    WriteBytes32(&preimage, batch.mints[0].miner_pubkey);
+    WriteU64LE(&preimage, batch.mints[0].mint_nonce);
+    return Sha256(preimage, out_hash);
+}
+
 static std::vector<uint8_t> BuildMintSigLocal(const CryptoBackend& cb, const uint8_t privkey[32], const MintTx& tx)
 {
     std::vector<uint8_t> m;
@@ -2658,6 +2687,22 @@ int main(int argc, char** argv)
                 uint64_t pow_attempts = 0;
                 bool pow_found = false;
                 uint64_t nonce_cursor = ((uint64_t)time(NULL) << 32) ^ ((uint64_t)getpid() << 16) ^ batch.round;
+                Bytes32 parent_root;
+                if (!store.ReadStateRoot(&parent_root))
+                {
+                    Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=parent_root reason=read_state_root_failed\n",
+                           (unsigned long long)batch.round);
+                    for (size_t i = 0; i < drained_spends.size(); ++i)
+                    {
+                        std::string readd_err;
+                        (void)mempool.AddSpend(drained_spends[i], &readd_err);
+                    }
+                    last_autopropose_tick = time(NULL);
+                    continue;
+                }
+                Bytes32 proposer_target_half;
+                HalveTargetLocal(expected_target, &proposer_target_half);
+                Bytes32 proposer_pow_hash;
                 while (pow_attempts < pow_max_attempts)
                 {
                     const uint64_t now_ms = NowMonotonicMs();
@@ -2673,8 +2718,14 @@ int main(int argc, char** argv)
                                (unsigned long long)batch.round);
                         break;
                     }
+                    if (!ComputeProposerPowHashLocal(batch, parent_root, &proposer_pow_hash))
+                    {
+                        Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=pow_hash reason=compute_failed\n",
+                               (unsigned long long)batch.round);
+                        break;
+                    }
                     ++pow_attempts;
-                    if (memcmp(batch.batch_hash.v, work_mint.target.v, 32) <= 0)
+                    if (memcmp(proposer_pow_hash.v, proposer_target_half.v, 32) <= 0)
                     {
                         pow_found = true;
                         break;
@@ -2703,7 +2754,7 @@ int main(int argc, char** argv)
                        (unsigned long long)pow_elapsed_ms,
                        (unsigned long long)pow_hps,
                        (unsigned long long)batch.mints[0].mint_nonce,
-                       Hex32(batch.batch_hash).c_str());
+                       Hex32(proposer_pow_hash).c_str());
                 if (!engine.Propose(batch))
                 {
                     Logf(LOG_NORMAL, "[AUTO][REJECT] round=%llu stage=propose code=%d reason=%s\n",
