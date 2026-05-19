@@ -1524,21 +1524,67 @@ int main(int argc, char** argv)
             return false;
         return true;
     };
-    std::function<bool(const Bytes32&, uint64_t, uint8_t*)> ResolveVoteEligibilityForRound =
-        [&](const Bytes32& validator_id, uint64_t round, uint8_t* out_type) {
-            if (!out_type)
+    std::function<bool(const Bytes32&, uint64_t, PowRecentEligibilityStats*)> GetPowEligibilityStatsForRound =
+        [&](const Bytes32& validator_id, uint64_t round, PowRecentEligibilityStats* out_stats) {
+            if (out_stats)
+                *out_stats = PowRecentEligibilityStats();
+            if (round == 0)
                 return false;
+            std::map<std::string, PowRecentEligibilityStats> stats;
+            BuildPowRecentEligibilityMap(round, &stats);
+            const std::string id((const char*)validator_id.v, 32);
+            std::map<std::string, PowRecentEligibilityStats>::const_iterator it = stats.find(id);
+            if (it == stats.end())
+                return false;
+            if (out_stats)
+                *out_stats = it->second;
+            return true;
+        };
+    std::function<bool(const Bytes32&, uint64_t, uint8_t*, std::string*)> ResolveVoteEligibilityForRoundVerbose =
+        [&](const Bytes32& validator_id, uint64_t round, uint8_t* out_type, std::string* out_reason) {
+            if (out_reason)
+                out_reason->clear();
+            if (!out_type)
+            {
+                if (out_reason)
+                    *out_reason = "null_out_type";
+                return false;
+            }
             if (IsValidatorForRound(validator_id, round))
             {
                 *out_type = VOTE_ELIGIBILITY_VALIDATOR_SET;
+                if (out_reason)
+                    *out_reason = "validator_set";
                 return true;
             }
-            if (IsPowEligibleForRound(validator_id, round))
+            PowRecentEligibilityStats pow_stats;
+            const bool has_pow_stats = GetPowEligibilityStatsForRound(validator_id, round, &pow_stats);
+            if (!has_pow_stats)
             {
-                *out_type = VOTE_ELIGIBILITY_POW_RECENT;
-                return true;
+                if (out_reason)
+                    *out_reason = "not_validator_and_no_pow_recent";
+                return false;
             }
-            return false;
+            if (pow_stats.wins < DrpowParams::kPowRecentMinWins)
+            {
+                if (out_reason)
+                    *out_reason = "pow_recent_below_min_wins";
+                return false;
+            }
+            if (pow_stats.weighted_work_units < DrpowParams::kPowRecentMinWorkUnits)
+            {
+                if (out_reason)
+                    *out_reason = "pow_recent_below_min_work";
+                return false;
+            }
+            *out_type = VOTE_ELIGIBILITY_POW_RECENT;
+            if (out_reason)
+                *out_reason = "pow_recent";
+            return true;
+        };
+    std::function<bool(const Bytes32&, uint64_t, uint8_t*)> ResolveVoteEligibilityForRound =
+        [&](const Bytes32& validator_id, uint64_t round, uint8_t* out_type) {
+            return ResolveVoteEligibilityForRoundVerbose(validator_id, round, out_type, NULL);
         };
     std::function<void(uint64_t, std::set<std::string>*)> BuildPowEligibleIdSetForRound =
         [&](uint64_t round, std::set<std::string>* out_ids) {
@@ -2708,14 +2754,27 @@ int main(int argc, char** argv)
             {
                 metric_vote_rejects += 1;
                 note_reject("vote_build_failed");
-                printf("drop propose vote_build_failed\n");
+                printf("drop propose vote_build_failed round=%llu code=%d msg=%s\n",
+                       (unsigned long long)batch.round,
+                       (int)engine.last_reject_code(),
+                       engine.last_reject_message().c_str());
                 return;
             }
             uint8_t local_vote_type = 0;
-            if (!ResolveVoteEligibilityForRound(signer_id, batch.round, &local_vote_type))
+            std::string local_elig_reason;
+            if (!ResolveVoteEligibilityForRoundVerbose(signer_id, batch.round, &local_vote_type, &local_elig_reason))
             {
-                printf("sync_only skip_vote round=%llu\n",
-                       (unsigned long long)batch.round);
+                PowRecentEligibilityStats local_pow_stats;
+                const bool have_pow_stats = GetPowEligibilityStatsForRound(signer_id, batch.round, &local_pow_stats);
+                printf("sync_only skip_vote round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
+                       (unsigned long long)batch.round,
+                       Hex32(signer_id).c_str(),
+                       local_elig_reason.c_str(),
+                       have_pow_stats ? 1 : 0,
+                       (unsigned long long)local_pow_stats.wins,
+                       (unsigned long long)local_pow_stats.weighted_work_units,
+                       (unsigned long long)DrpowParams::kPowRecentMinWins,
+                       (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
                 return;
             }
             vote.validator_id = signer_id;
@@ -2776,22 +2835,34 @@ int main(int argc, char** argv)
                 return;
             }
             uint8_t expected_vote_type = 0;
-            if (!ResolveVoteEligibilityForRound(vote.validator_id, vote.round, &expected_vote_type))
+            std::string expected_vote_reason;
+            if (!ResolveVoteEligibilityForRoundVerbose(vote.validator_id, vote.round, &expected_vote_type, &expected_vote_reason))
             {
                 metric_vote_rejects += 1;
                 note_reject("vote_unauthorized_voter");
-                printf("drop vote unauthorized_voter round=%llu\n",
-                       (unsigned long long)vote.round);
+                PowRecentEligibilityStats pow_stats;
+                const bool has_pow_stats = GetPowEligibilityStatsForRound(vote.validator_id, vote.round, &pow_stats);
+                printf("drop vote unauthorized_voter round=%llu voter=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
+                       (unsigned long long)vote.round,
+                       Hex32(vote.validator_id).c_str(),
+                       expected_vote_reason.c_str(),
+                       has_pow_stats ? 1 : 0,
+                       (unsigned long long)pow_stats.wins,
+                       (unsigned long long)pow_stats.weighted_work_units,
+                       (unsigned long long)DrpowParams::kPowRecentMinWins,
+                       (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
                 return;
             }
             if (vote.eligibility_type != expected_vote_type)
             {
                 metric_vote_rejects += 1;
                 note_reject("vote_eligibility_mismatch");
-                printf("drop vote eligibility_mismatch round=%llu got=%u expected=%u\n",
+                printf("drop vote eligibility_mismatch round=%llu voter=%s got=%u expected=%u expected_reason=%s\n",
                        (unsigned long long)vote.round,
+                       Hex32(vote.validator_id).c_str(),
                        (unsigned)vote.eligibility_type,
-                       (unsigned)expected_vote_type);
+                       (unsigned)expected_vote_type,
+                       expected_vote_reason.c_str());
                 return;
             }
             if (!vote_verifier.VerifyVote(vote))
@@ -2835,14 +2906,50 @@ int main(int argc, char** argv)
                     return;
                 std::set<std::string> pow_recent_ids;
                 BuildPowEligibleIdSetForRound(itb->second.round, &pow_recent_ids);
-                if (!HasSupermajorityPowerTyped(epoch, qc, pow_recent_ids, DrpowParams::kPowRecentVoteWeight))
+                const bool has_supermajority = HasSupermajorityPowerTyped(epoch, qc, pow_recent_ids, DrpowParams::kPowRecentVoteWeight);
+                if (!has_supermajority)
+                {
+                    size_t validator_votes = 0;
+                    size_t pow_recent_votes = 0;
+                    size_t unknown_votes = 0;
+                    for (size_t vi = 0; vi < qc.votes.size(); ++vi)
+                    {
+                        if (qc.votes[vi].eligibility_type == VOTE_ELIGIBILITY_VALIDATOR_SET)
+                            validator_votes += 1;
+                        else if (qc.votes[vi].eligibility_type == VOTE_ELIGIBILITY_POW_RECENT)
+                            pow_recent_votes += 1;
+                        else
+                            unknown_votes += 1;
+                    }
+                    Logf(LOG_NORMAL, "[QC][GATE] round=%llu status=insufficient votes=%zu validator_votes=%zu pow_recent_votes=%zu unknown_votes=%zu epoch_validators=%zu pow_recent_ids=%zu pow_vote_weight=%llu\n",
+                           (unsigned long long)itb->second.round,
+                           qc.votes.size(),
+                           validator_votes,
+                           pow_recent_votes,
+                           unknown_votes,
+                           epoch.validators.size(),
+                           pow_recent_ids.size(),
+                           (unsigned long long)DrpowParams::kPowRecentVoteWeight);
                     return;
+                }
             }
             observe_qc(qc);
             if (!(IsValidatorForRound(signer_id, itb->second.round) || IsPowEligibleForRound(signer_id, itb->second.round)))
             {
-                printf("sync_only skip_commit_broadcast round=%llu\n",
-                       (unsigned long long)itb->second.round);
+                uint8_t local_vote_type = 0;
+                std::string local_elig_reason;
+                (void)ResolveVoteEligibilityForRoundVerbose(signer_id, itb->second.round, &local_vote_type, &local_elig_reason);
+                PowRecentEligibilityStats local_pow_stats;
+                const bool have_pow_stats = GetPowEligibilityStatsForRound(signer_id, itb->second.round, &local_pow_stats);
+                printf("sync_only skip_commit_broadcast round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
+                       (unsigned long long)itb->second.round,
+                       Hex32(signer_id).c_str(),
+                       local_elig_reason.c_str(),
+                       have_pow_stats ? 1 : 0,
+                       (unsigned long long)local_pow_stats.wins,
+                       (unsigned long long)local_pow_stats.weighted_work_units,
+                       (unsigned long long)DrpowParams::kPowRecentMinWins,
+                       (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
                 return;
             }
             std::vector<uint8_t> commit_payload;
@@ -3251,10 +3358,20 @@ int main(int argc, char** argv)
                 if (engine.ValidateAndVote(batch, &vote))
                 {
                     uint8_t local_vote_type = 0;
-                    if (!ResolveVoteEligibilityForRound(signer_id, batch.round, &local_vote_type))
+                    std::string local_elig_reason;
+                    if (!ResolveVoteEligibilityForRoundVerbose(signer_id, batch.round, &local_vote_type, &local_elig_reason))
                     {
-                        printf("sync_only skip_vote round=%llu\n",
-                               (unsigned long long)batch.round);
+                        PowRecentEligibilityStats local_pow_stats;
+                        const bool have_pow_stats = GetPowEligibilityStatsForRound(signer_id, batch.round, &local_pow_stats);
+                        printf("sync_only skip_vote round=%llu signer=%s reason=%s pow_stats_present=%d pow_wins=%llu pow_work_units=%llu min_wins=%llu min_work_units=%llu\n",
+                               (unsigned long long)batch.round,
+                               Hex32(signer_id).c_str(),
+                               local_elig_reason.c_str(),
+                               have_pow_stats ? 1 : 0,
+                               (unsigned long long)local_pow_stats.wins,
+                               (unsigned long long)local_pow_stats.weighted_work_units,
+                               (unsigned long long)DrpowParams::kPowRecentMinWins,
+                               (unsigned long long)DrpowParams::kPowRecentMinWorkUnits);
                     }
                     else
                     {
@@ -3289,6 +3406,30 @@ int main(int argc, char** argv)
                                     std::set<std::string> pow_recent_ids;
                                     BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
                                     local_supermajority = HasSupermajorityPowerTyped(epoch, local_qc, pow_recent_ids, DrpowParams::kPowRecentVoteWeight);
+                                    if (!local_supermajority)
+                                    {
+                                        size_t validator_votes = 0;
+                                        size_t pow_recent_votes = 0;
+                                        size_t unknown_votes = 0;
+                                        for (size_t vi = 0; vi < local_qc.votes.size(); ++vi)
+                                        {
+                                            if (local_qc.votes[vi].eligibility_type == VOTE_ELIGIBILITY_VALIDATOR_SET)
+                                                validator_votes += 1;
+                                            else if (local_qc.votes[vi].eligibility_type == VOTE_ELIGIBILITY_POW_RECENT)
+                                                pow_recent_votes += 1;
+                                            else
+                                                unknown_votes += 1;
+                                        }
+                                        Logf(LOG_NORMAL, "[QC][GATE] round=%llu status=insufficient votes=%zu validator_votes=%zu pow_recent_votes=%zu unknown_votes=%zu epoch_validators=%zu pow_recent_ids=%zu pow_vote_weight=%llu\n",
+                                               (unsigned long long)batch.round,
+                                               local_qc.votes.size(),
+                                               validator_votes,
+                                               pow_recent_votes,
+                                               unknown_votes,
+                                               epoch.validators.size(),
+                                               pow_recent_ids.size(),
+                                               (unsigned long long)DrpowParams::kPowRecentVoteWeight);
+                                    }
                                 }
                             }
                             if (local_supermajority && batch.round > last_committed_round)
@@ -3366,8 +3507,10 @@ int main(int argc, char** argv)
                 }
                 else
                 {
-                    Logf(LOG_DEBUG, "[AUTO] vote_skip round=%llu reason=validate_and_vote_failed\n",
-                           (unsigned long long)batch.round);
+                    Logf(LOG_NORMAL, "[VOTE][REJECT] round=%llu stage=validate_and_vote code=%d reason=%s\n",
+                           (unsigned long long)batch.round,
+                           (int)engine.last_reject_code(),
+                           engine.last_reject_message().c_str());
                 }
                 Logf(LOG_DEBUG, "[AUTO] broadcast round=%llu spends=%zu mints=%zu fees=%llu minted=%llu\n",
                        (unsigned long long)batch.round,
