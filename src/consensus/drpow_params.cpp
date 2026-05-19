@@ -13,7 +13,7 @@ namespace drpow {
 
 const char* DrpowParamsVersionTag()
 {
-    return "drpow_params_v1";
+    return "drpow_params_v2";
 }
 
 bool ComputeDrpowParamsHash(Bytes32* out_hash)
@@ -22,25 +22,13 @@ bool ComputeDrpowParamsHash(Bytes32* out_hash)
         return false;
     char buf[1024];
     // Canonical serialization: fixed field order, decimal integer formatting.
-    const int n = snprintf(
-        buf,
-        sizeof(buf),
-        "%s|epoch_len=%llu|validator_cap=%llu|validator_growth=%llu|admission_lookback_epochs=%llu|admission_pow_recent_min_wins=%llu|admission_incumbent_min_wins=%llu|pow_recent_eligibility_lookback_rounds=%llu|pow_recent_vote_weight=%llu|pow_recent_min_wins=%llu|pow_recent_min_work_units=%llu|target_epoch_rounds=%llu|genesis_bootstrap_rounds=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
-        DrpowParamsVersionTag(),
-        (unsigned long long)DrpowParams::kEpochLengthRounds,
-        (unsigned long long)DrpowParams::kEpochValidatorCap,
-        (unsigned long long)DrpowParams::kEpochValidatorGrowthPerEpoch,
-        (unsigned long long)DrpowParams::kAdmissionLookbackEpochs,
-        (unsigned long long)DrpowParams::kAdmissionPowRecentMinWins,
-        (unsigned long long)DrpowParams::kAdmissionIncumbentMinWins,
-        (unsigned long long)DrpowParams::kPowRecentEligibilityLookbackRounds,
-        (unsigned long long)DrpowParams::kPowRecentVoteWeight,
-        (unsigned long long)DrpowParams::kPowRecentMinWins,
-        (unsigned long long)DrpowParams::kPowRecentMinWorkUnits,
-        (unsigned long long)DrpowParams::kTargetEpochRounds,
-        (unsigned long long)DrpowParams::kGenesisBootstrapRounds,
-        (unsigned long long)DrpowParams::kTargetAdjustUpPpmLimit,
-        (unsigned long long)DrpowParams::kTargetAdjustDownPpmLimit);
+    const int n = snprintf(buf,
+                           sizeof(buf),
+                           "%s|min_qc_votes=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
+                           DrpowParamsVersionTag(),
+                           (unsigned long long)DrpowParams::kMinQcVotes,
+                           (unsigned long long)DrpowParams::kTargetAdjustUpPpmLimit,
+                           (unsigned long long)DrpowParams::kTargetAdjustDownPpmLimit);
     if (n <= 0 || (size_t)n >= sizeof(buf))
         return false;
     std::vector<uint8_t> bytes((const uint8_t*)buf, (const uint8_t*)buf + (size_t)n);
@@ -97,34 +85,12 @@ bool ComputeDrpowParamsHashFromSpecFile(const char* spec_file_path, Bytes32* out
     while (std::getline(in, line))
     {
         uint64_t v = 0;
-        if (ExtractUintFromLine(line, "kEpochLengthRounds", &v)) kv["kEpochLengthRounds"] = v;
-        if (ExtractUintFromLine(line, "kEpochValidatorCap", &v)) kv["kEpochValidatorCap"] = v;
-        if (ExtractUintFromLine(line, "kEpochValidatorGrowthPerEpoch", &v)) kv["kEpochValidatorGrowthPerEpoch"] = v;
-        if (ExtractUintFromLine(line, "kAdmissionLookbackEpochs", &v)) kv["kAdmissionLookbackEpochs"] = v;
-        if (ExtractUintFromLine(line, "kAdmissionPowRecentMinWins", &v)) kv["kAdmissionPowRecentMinWins"] = v;
-        if (ExtractUintFromLine(line, "kAdmissionIncumbentMinWins", &v)) kv["kAdmissionIncumbentMinWins"] = v;
-        if (ExtractUintFromLine(line, "kPowRecentEligibilityLookbackRounds", &v)) kv["kPowRecentEligibilityLookbackRounds"] = v;
-        if (ExtractUintFromLine(line, "kPowRecentVoteWeight", &v)) kv["kPowRecentVoteWeight"] = v;
-        if (ExtractUintFromLine(line, "kPowRecentMinWins", &v)) kv["kPowRecentMinWins"] = v;
-        if (ExtractUintFromLine(line, "kPowRecentMinWorkUnits", &v)) kv["kPowRecentMinWorkUnits"] = v;
-        if (ExtractUintFromLine(line, "kTargetEpochRounds", &v)) kv["kTargetEpochRounds"] = v;
-        if (ExtractUintFromLine(line, "kGenesisBootstrapRounds", &v)) kv["kGenesisBootstrapRounds"] = v;
+        if (ExtractUintFromLine(line, "kMinQcVotes", &v)) kv["kMinQcVotes"] = v;
         if (ExtractUintFromLine(line, "kTargetAdjustUpPpmLimit", &v)) kv["kTargetAdjustUpPpmLimit"] = v;
         if (ExtractUintFromLine(line, "kTargetAdjustDownPpmLimit", &v)) kv["kTargetAdjustDownPpmLimit"] = v;
     }
     static const char* required[] = {
-        "kEpochLengthRounds",
-        "kEpochValidatorCap",
-        "kEpochValidatorGrowthPerEpoch",
-        "kAdmissionLookbackEpochs",
-        "kAdmissionPowRecentMinWins",
-        "kAdmissionIncumbentMinWins",
-        "kPowRecentEligibilityLookbackRounds",
-        "kPowRecentVoteWeight",
-        "kPowRecentMinWins",
-        "kPowRecentMinWorkUnits",
-        "kTargetEpochRounds",
-        "kGenesisBootstrapRounds",
+        "kMinQcVotes",
         "kTargetAdjustUpPpmLimit",
         "kTargetAdjustDownPpmLimit"
     };
@@ -138,25 +104,13 @@ bool ComputeDrpowParamsHashFromSpecFile(const char* spec_file_path, Bytes32* out
         }
     }
     char buf[1024];
-    const int n = snprintf(
-        buf,
-        sizeof(buf),
-        "%s|epoch_len=%llu|validator_cap=%llu|validator_growth=%llu|admission_lookback_epochs=%llu|admission_pow_recent_min_wins=%llu|admission_incumbent_min_wins=%llu|pow_recent_eligibility_lookback_rounds=%llu|pow_recent_vote_weight=%llu|pow_recent_min_wins=%llu|pow_recent_min_work_units=%llu|target_epoch_rounds=%llu|genesis_bootstrap_rounds=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
-        DrpowParamsVersionTag(),
-        (unsigned long long)kv["kEpochLengthRounds"],
-        (unsigned long long)kv["kEpochValidatorCap"],
-        (unsigned long long)kv["kEpochValidatorGrowthPerEpoch"],
-        (unsigned long long)kv["kAdmissionLookbackEpochs"],
-        (unsigned long long)kv["kAdmissionPowRecentMinWins"],
-        (unsigned long long)kv["kAdmissionIncumbentMinWins"],
-        (unsigned long long)kv["kPowRecentEligibilityLookbackRounds"],
-        (unsigned long long)kv["kPowRecentVoteWeight"],
-        (unsigned long long)kv["kPowRecentMinWins"],
-        (unsigned long long)kv["kPowRecentMinWorkUnits"],
-        (unsigned long long)kv["kTargetEpochRounds"],
-        (unsigned long long)kv["kGenesisBootstrapRounds"],
-        (unsigned long long)kv["kTargetAdjustUpPpmLimit"],
-        (unsigned long long)kv["kTargetAdjustDownPpmLimit"]);
+    const int n = snprintf(buf,
+                           sizeof(buf),
+                           "%s|min_qc_votes=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
+                           DrpowParamsVersionTag(),
+                           (unsigned long long)kv["kMinQcVotes"],
+                           (unsigned long long)kv["kTargetAdjustUpPpmLimit"],
+                           (unsigned long long)kv["kTargetAdjustDownPpmLimit"]);
     if (n <= 0 || (size_t)n >= sizeof(buf))
     {
         if (out_error)

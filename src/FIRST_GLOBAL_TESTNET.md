@@ -20,9 +20,9 @@ network_magic_hex=0x52515431
 
 Nodes with different magic MUST not interoperate.
 
-## 3. Validator Set Lock
+## 3. Open Admission
 
-All nodes MUST use the exact same ordered `validator_pubkeys_hex` list for epoch 0.
+Nodes do not use a static validator set. Any node may join, sync, and participate under PoW admission rules.
 
 ## 4. Seed Topology
 
@@ -44,7 +44,7 @@ Start from:
 Healthy:
 - `node_started ...`
 - `network_magic=...`
-- `epoch_transition ...`
+- `difficulty_transition ...`
 - `commit ok round=...`
 - `sync_tip updated round=...`
 - `final_status round=... state_root=...`

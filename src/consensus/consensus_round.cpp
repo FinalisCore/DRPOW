@@ -1,5 +1,6 @@
 #include "consensus_round.h"
 #include "drpow/tx_codec.h"
+#include "drpow_params.h"
 
 #include <set>
 #include <string>
@@ -67,24 +68,49 @@ static bool ValidateBatchStateless(const RoundBatch& batch)
     return true;
 }
 
-static bool HasPowAuthorization(const RoundBatch& batch, const ProofVerifier* proof_verifier)
+static bool HasPowAuthorization(const RoundBatch& batch,
+                                const StateStore* state_store,
+                                const ProofVerifier* proof_verifier)
 {
     (void)proof_verifier;
-    if (batch.mints.empty())
+    if (batch.mints.empty() || batch.round == 0)
         return false;
-    // Pure PoW mode: any miner is authorized if its canonical batch hash
-    // meets the declared target. This removes signature-gated mint auth.
-    Bytes32 h;
-    if (!ComputeBatchHashCanonical(batch, &h))
+    Bytes32 batch_hash;
+    if (!ComputeBatchHashCanonical(batch, &batch_hash))
         return false;
-    return memcmp(h.v, batch.mints[0].target.v, 32) <= 0;
+    for (int i = 0; i < 32; ++i)
+    {
+        if (batch_hash.v[i] != batch.batch_hash.v[i])
+            return false;
+    }
+    Bytes32 parent_root;
+    if (!state_store || !state_store->ReadStateRoot(&parent_root))
+        return false;
+    std::vector<uint8_t> preimage;
+    WriteU64LE(&preimage, batch.round);
+    WriteBytes32(&preimage, parent_root);
+    WriteBytes32(&preimage, batch.batch_hash);
+    WriteBytes32(&preimage, batch.mints[0].miner_pubkey);
+    WriteU64LE(&preimage, batch.mints[0].mint_nonce);
+    Bytes32 proposer_pow_hash;
+    if (!Sha256(preimage, &proposer_pow_hash))
+        return false;
+    Bytes32 half_target = batch.mints[0].target;
+    uint16_t carry = 0;
+    for (int i = 0; i < 32; ++i)
+    {
+        const uint16_t cur = (uint16_t)(carry * 256u + half_target.v[i]);
+        half_target.v[i] = (uint8_t)(cur / 2u);
+        carry = (uint16_t)(cur % 2u);
+    }
+    return memcmp(proposer_pow_hash.v, half_target.v, 32) <= 0;
 }
 
 static bool IsMinerEligibleForRound(const RoundBatch& batch,
-                                    const ValidatorSet* validator_set,
+                                    const void* unused_admission_context,
                                     const EconomicsPolicy& policy)
 {
-    (void)validator_set;
+    (void)unused_admission_context;
     (void)policy;
     // Open PoW mining: miner does not need pre-existing validator membership.
     // Authorization + target checks enforce real work validity.
@@ -100,69 +126,28 @@ static bool ComputeExpectedTargetForRound(const StateStore* state_store,
 {
     if (!state_store || !out_target || round == 0)
         return false;
-    const uint64_t epoch_len = policy.target_epoch_rounds == 0 ? 1 : policy.target_epoch_rounds;
-    const bool epoch_start = (round == 1) || (((round - 1) % epoch_len) == 0);
     if (round == 1)
     {
         *out_target = policy.max_target;
         return true;
     }
-
-    if (!epoch_start)
-    {
-        std::vector<RoundCommitRecord> prev;
-        if (!state_store->ExportVerifiedCommitRecordsFromRound(round - 1, 1, &prev))
-            return false;
-        if (prev.size() != 1)
-            return false;
-        MintTx mint;
-        size_t off = 0;
-        if (!ParseMintTxCanonical(prev[0].consensus_proof.empty() ? NULL : &prev[0].consensus_proof[0],
-                                  prev[0].consensus_proof.size(),
-                                  &off,
-                                  &mint) ||
-            off != prev[0].consensus_proof.size())
-        {
-            return false;
-        }
-        *out_target = mint.target;
-        return true;
-    }
-
-    // Epoch boundary retarget: derive one target commitment from previous epoch only.
-    std::vector<RoundCommitRecord> recs;
-    const uint64_t from_round = round - epoch_len;
-    if (!state_store->ExportVerifiedCommitRecordsFromRound(from_round, (size_t)epoch_len, &recs))
+    std::vector<RoundCommitRecord> prev;
+    if (!state_store->ExportVerifiedCommitRecordsFromRound(round - 1, 1, &prev))
         return false;
-    if (recs.size() == 0)
+    if (prev.size() != 1)
         return false;
-
-    Bytes32 prev_target = policy.max_target;
-    uint64_t observed_mints = 0;
-    for (size_t i = 0; i < recs.size(); ++i)
+    MintTx mint;
+    size_t off = 0;
+    if (!ParseMintTxCanonical(prev[0].consensus_proof.empty() ? NULL : &prev[0].consensus_proof[0],
+                              prev[0].consensus_proof.size(),
+                              &off,
+                              &mint) ||
+        off != prev[0].consensus_proof.size())
     {
-        MintTx mint;
-        size_t off = 0;
-        if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
-                                  recs[i].consensus_proof.size(),
-                                  &off,
-                                  &mint) ||
-            off != recs[i].consensus_proof.size())
-        {
-            return false;
-        }
-        prev_target = mint.target;
-        observed_mints += 1;
+        return false;
     }
-    const uint64_t expected_mints = policy.target_mints_per_window == 0 ? epoch_len : policy.target_mints_per_window;
-    return NextPowTargetDeterministic(prev_target,
-                                      observed_mints,
-                                      expected_mints,
-                                      policy.target_adjust_up_ppm_limit,
-                                      policy.target_adjust_down_ppm_limit,
-                                      policy.min_target,
-                                      policy.max_target,
-                                      out_target);
+    *out_target = mint.target;
+    return true;
 }
 
 static bool BatchMatchesExpectedTarget(const RoundBatch& batch, const Bytes32& expected_target)
@@ -199,12 +184,10 @@ static uint64_t BatchProofCostUnits(const RoundBatch& batch)
 }
 
 ConsensusRoundEngine::ConsensusRoundEngine(StateStore* state_store,
-                                           const ValidatorSet* validator_set,
                                            const VoteVerifier* vote_verifier,
                                            const ProofVerifier* proof_verifier,
                                            const EconomicsPolicy* economics_policy)
     : state_store_(state_store),
-      validator_set_(validator_set),
       vote_verifier_(vote_verifier),
       proof_verifier_(proof_verifier),
       economics_policy_(economics_policy ? *economics_policy : DefaultEconomicsPolicy()),
@@ -232,9 +215,9 @@ bool ConsensusRoundEngine::Propose(const RoundBatch& batch)
         return Fail(REJECT_FEE_POLICY_INVALID, "fee policy invalid");
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
         return Fail(REJECT_PROOF_BUDGET_EXCEEDED, "proof budget exceeded");
-    if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
+    if (!IsMinerEligibleForRound(batch, NULL, economics_policy_))
         return Fail(REJECT_POW_ELIGIBILITY_INVALID, "pow eligibility invalid");
-    if (!HasPowAuthorization(batch, proof_verifier_))
+    if (!HasPowAuthorization(batch, state_store_, proof_verifier_))
         return Fail(REJECT_POW_TARGET_INVALID, "pow target not met");
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
@@ -264,9 +247,9 @@ bool ConsensusRoundEngine::ValidateAndVote(const RoundBatch& batch, Vote* out_vo
         return false;
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
         return false;
-    if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
+    if (!IsMinerEligibleForRound(batch, NULL, economics_policy_))
         return false;
-    if (!HasPowAuthorization(batch, proof_verifier_))
+    if (!HasPowAuthorization(batch, state_store_, proof_verifier_))
         return false;
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
@@ -281,7 +264,7 @@ bool ConsensusRoundEngine::ValidateAndVote(const RoundBatch& batch, Vote* out_vo
             return false;
     out_vote->round = batch.round;
     out_vote->batch_hash = batch.batch_hash;
-    out_vote->eligibility_type = VOTE_ELIGIBILITY_VALIDATOR_SET;
+    out_vote->eligibility_type = VOTE_ELIGIBILITY_POW_RECENT;
     return true;
 }
 
@@ -298,7 +281,7 @@ bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertifica
         return Fail(REJECT_FEE_POLICY_INVALID, "fee policy invalid");
     if (BatchProofCostUnits(batch) > economics_policy_.max_proof_cost_per_round)
         return Fail(REJECT_PROOF_BUDGET_EXCEEDED, "proof budget exceeded");
-    if (!IsMinerEligibleForRound(batch, validator_set_, economics_policy_))
+    if (!IsMinerEligibleForRound(batch, NULL, economics_policy_))
         return Fail(REJECT_POW_ELIGIBILITY_INVALID, "pow eligibility invalid");
     Bytes32 expected_target;
     if (!ComputeExpectedTargetForRound(state_store_, batch.round, economics_policy_, &expected_target))
@@ -307,7 +290,7 @@ bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertifica
         return Fail(REJECT_POW_TARGET_INVALID, "pow target invalid");
     if (batch.mints.empty())
         return Fail(REJECT_POW_AUTH_MISSING, "pow auth missing");
-    if (!HasPowAuthorization(batch, proof_verifier_))
+    if (!HasPowAuthorization(batch, state_store_, proof_verifier_))
         return Fail(REJECT_POW_TARGET_INVALID, "pow target not met");
 
     if (!state_store_->Begin())

@@ -73,7 +73,7 @@ The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHALL`, `SHALL NOT`, `SHOULD`, an
 ### 3.4 Consensus (BFT Finality, PoW Authority, Zero PoS)
 
 1. Consensus commit flow SHALL be round-based BFT: `propose -> vote -> commit`.
-2. Voting rights MUST be granted only to PoW-qualified participants for the active epoch/round.
+2. Voting rights MUST be granted only to PoW-qualified participants for the active round.
 3. Validator authority MUST NOT depend on stake lock, stake weight, or deposit size.
 4. Commit MUST apply a deterministic atomic state update.
 5. All nodes MUST derive identical post-state bytes/root for an accepted commit.
@@ -84,23 +84,17 @@ The key words `MUST`, `MUST NOT`, `REQUIRED`, `SHALL`, `SHALL NOT`, `SHOULD`, an
 - view-change timeout,
 - maximum tolerated Byzantine faults.
 
-### 3.4.1 `epoch_transition` (Operator Rules)
+### 3.4.1 Round Determinism (Operator Rules)
 
-1. Nodes MUST compute epoch deterministically from round:
-- `epoch = floor((round - 1) / EPOCH_LENGTH)`
-- `round_start = epoch * EPOCH_LENGTH + 1`
-2. If epoch data for a round is missing, node MUST install it only via deterministic derivation from canonical inputs:
-- `seed = (state_root, epoch_number)`
-- deterministic validator ordering/selection function
-3. Node MUST compute expected PoW target for each round using canonical commit history window and deterministic difficulty function:
+1. Node MUST compute expected PoW target for each round using canonical commit history window and deterministic difficulty function:
 - `NextPowTargetDeterministic(...)`
-4. Node MUST reject propose/vote/commit processing for round `R` if mint target in batch does not exactly match the derived expected target for `R`.
-5. Transition application points MUST be identical across nodes:
+2. Node MUST reject propose/vote/commit processing for round `R` if mint target in batch does not exactly match the derived expected target for `R`.
+3. Transition application points MUST be identical across nodes:
 - before processing incoming `PROPOSE`, `VOTE`, `COMMIT`,
 - before catch-up replay apply,
 - before local autopropose for next round.
-6. Node SHOULD emit auditable transition log line:
-- `epoch_transition epoch=<n> round_start=<r> validators=<k> target=<hex> seed_root=<hex>`
+4. Node SHOULD emit auditable transition log line:
+- `difficulty_transition round=<r> target=<hex>`
 
 ### 3.5 Confidentiality
 
