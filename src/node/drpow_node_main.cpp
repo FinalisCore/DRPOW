@@ -1605,6 +1605,29 @@ int main(int argc, char** argv)
                 out_ids->insert(it->first);
             }
         };
+    std::function<void(const RoundBatch&, const char*)> MaybeAdoptBootstrapValidatorSet =
+        [&](const RoundBatch& batch, const char* source) {
+            if (last_committed_round != 0)
+                return;
+            if (batch.round > economics_policy.genesis_bootstrap_rounds)
+                return;
+            if (batch.mints.empty())
+                return;
+            const Bytes32& proposer = batch.mints[0].miner_pubkey;
+            if (IsValidatorForRound(proposer, batch.round))
+                return;
+            std::vector<Validator> bootstrap_vals(1);
+            bootstrap_vals[0].validator_id = proposer;
+            bootstrap_vals[0].voting_power = 1;
+            PowLotteryValidatorSet bootstrap_set(kRuntimeEpochLength);
+            if (!bootstrap_set.InstallEpoch(0, bootstrap_vals))
+                return;
+            vset = bootstrap_set;
+            printf("bootstrap_validator_set_adopted source=%s proposer=%s round=%llu\n",
+                   source ? source : "unknown",
+                   Hex32(proposer).c_str(),
+                   (unsigned long long)batch.round);
+        };
 
     std::function<void()> TryCatchUpFromCache = [&]() {
         if (last_committed_round >= synced_last_round)
@@ -1667,6 +1690,7 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 break;
             }
+            MaybeAdoptBootstrapValidatorSet(batch, "catchup");
             if (batch.round > economics_policy.genesis_bootstrap_rounds)
             {
                 ValidatorEpoch epoch;
@@ -2703,24 +2727,7 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 return;
             }
-            if (last_committed_round == 0 &&
-                !cfg.peers.empty() &&
-                batch.round <= economics_policy.genesis_bootstrap_rounds &&
-                !batch.mints.empty() &&
-                !IsValidatorForRound(batch.mints[0].miner_pubkey, batch.round))
-            {
-                std::vector<Validator> bootstrap_vals(1);
-                bootstrap_vals[0].validator_id = batch.mints[0].miner_pubkey;
-                bootstrap_vals[0].voting_power = 1;
-                PowLotteryValidatorSet bootstrap_set(kRuntimeEpochLength);
-                if (bootstrap_set.InstallEpoch(0, bootstrap_vals))
-                {
-                    vset = bootstrap_set;
-                    printf("bootstrap_validator_set_adopted proposer=%s round=%llu\n",
-                           Hex32(batch.mints[0].miner_pubkey).c_str(),
-                           (unsigned long long)batch.round);
-                }
-            }
+            MaybeAdoptBootstrapValidatorSet(batch, "propose");
             if (batch.mints.empty())
             {
                 metric_propose_rejects += 1;
@@ -3005,6 +3012,7 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 return;
             }
+            MaybeAdoptBootstrapValidatorSet(batch, "commit");
             if (qc.round != batch.round || memcmp(qc.batch_hash.v, batch.batch_hash.v, 32) != 0)
             {
                 metric_commit_rejects += 1;
