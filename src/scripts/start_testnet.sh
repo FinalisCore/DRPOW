@@ -13,6 +13,7 @@ AUTOPROPOSE_INTERVAL_SEC="${AUTOPROPOSE_INTERVAL_SEC:-20}"
 DURATION_SEC="${DURATION_SEC:-0}"
 LOG_LEVEL="${LOG_LEVEL:-normal}"
 PEERS_FILE="${PEERS_FILE:-${DRPOW_HOME}/peers.txt}"
+DEFAULT_BOOTSTRAP_PEER="${DEFAULT_BOOTSTRAP_PEER:-192.168.0.104:29101}"
 
 CONFIG_DIR="${DRPOW_HOME}/config"
 DATA_DIR="${DATA_DIR:-${DRPOW_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
@@ -32,6 +33,16 @@ LIBOQS_PC_DIR="${LIBOQS_INSTALL_DIR}/lib/pkgconfig"
 LIBOQS_LIB_DIR="${LIBOQS_INSTALL_DIR}/lib"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 1; }; }
+
+ensure_default_peers_file() {
+  local default_peer="${DEFAULT_BOOTSTRAP_PEER}"
+  [ -z "${default_peer}" ] && return
+  mkdir -p "$(dirname "${PEERS_FILE}")"
+  touch "${PEERS_FILE}"
+  if ! grep -Eq "^[[:space:]]*${default_peer//./\\.}[[:space:]]*$" "${PEERS_FILE}"; then
+    echo "${default_peer}" >> "${PEERS_FILE}"
+  fi
+}
 
 load_bootstrap_peers() {
   local peers=()
@@ -131,12 +142,17 @@ prepare_genesis() {
 
 write_config() {
   mkdir -p "${CONFIG_DIR}"
-  if [ -z "${AUTOPROPOSE}" ]; then
-    if [ -n "${SEED_PEER}" ]; then AUTOPROPOSE=0; else AUTOPROPOSE=1; fi
-  fi
   local JOINER_MODE=0
   if [ -n "${SEED_PEER}" ]; then
     JOINER_MODE=1
+  fi
+  if [ "${JOINER_MODE}" = "1" ]; then
+    if [ -n "${AUTOPROPOSE}" ] && [ "${AUTOPROPOSE}" != "0" ]; then
+      echo "config_override: forcing AUTOPROPOSE=0 because joiner_mode=1 (SEED_PEER set)" >&2
+    fi
+    AUTOPROPOSE=0
+  elif [ -z "${AUTOPROPOSE}" ]; then
+    AUTOPROPOSE=1
   fi
   cat > "${CONF_FILE}" <<CFG
 bind_port=${BIND_PORT}
@@ -162,6 +178,7 @@ main() {
   install_liboqs_if_needed
   build_binaries
   write_env
+  ensure_default_peers_file
   prepare_key
   prepare_genesis
   load_bootstrap_peers
