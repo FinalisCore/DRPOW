@@ -959,6 +959,14 @@ int main(int argc, char** argv)
             (void)SaveSyncedTipFile(sync_tip_file, synced_last_round, synced_state_root);
         }
     }
+    std::function<void(uint64_t)> AdvanceSyncedTipFromCommit = [&](uint64_t committed_round) {
+        if (committed_round > synced_last_round)
+            synced_last_round = committed_round;
+        Bytes32 root;
+        if (store.ReadStateRoot(&root))
+            synced_state_root = root;
+        (void)SaveSyncedTipFile(sync_tip_file, synced_last_round, synced_state_root);
+    };
 
     std::function<void()> CompactCommitPayloadCache = [&]() {
         const size_t before_count = CountCommitPayloadCacheEntries(commit_payload_cache);
@@ -1187,6 +1195,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
+            AdvanceSyncedTipFromCommit(last_committed_round);
             PurgeCommittedPending(last_committed_round);
             applied++;
             printf("catchup commit ok round=%llu\n", (unsigned long long)batch.round);
@@ -2484,6 +2493,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
+            AdvanceSyncedTipFromCommit(last_committed_round);
             PurgeCommittedPending(last_committed_round);
             const uint64_t minted = SumBatchMintValue(batch);
             const uint64_t fees = SumBatchFees(batch);
@@ -2876,6 +2886,7 @@ int main(int argc, char** argv)
                                     last_committed_round = batch.round;
                                     last_progress_round = last_committed_round;
                                     last_progress_time = time(NULL);
+                                    AdvanceSyncedTipFromCommit(last_committed_round);
                                     PurgeCommittedPending(last_committed_round);
                                     const uint64_t minted = SumBatchMintValue(batch);
                                     const uint64_t fees = SumBatchFees(batch);
