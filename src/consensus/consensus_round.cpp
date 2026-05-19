@@ -14,6 +14,7 @@ static bool ComputeBatchHashCanonical(const RoundBatch& batch, Bytes32* out)
 
     std::vector<uint8_t> encoded;
     WriteU64LE(&encoded, batch.round);
+    WriteBytes32(&encoded, batch.params_hash);
 
     WriteU64LE(&encoded, (uint64_t)batch.spends.size());
     for (size_t i = 0; i < batch.spends.size(); ++i)

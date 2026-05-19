@@ -5,6 +5,7 @@
 
 #include "consensus_round.h"
 #include "crypto_backend.h"
+#include "drpow_params.h"
 #include "proof_verifier.h"
 #include "registry_state_store.h"
 #include "static_validator_set.h"
@@ -30,6 +31,7 @@ static bool BuildBatchHash(const RoundBatch& batch, Bytes32* out)
         return false;
     std::vector<uint8_t> encoded;
     WriteU64LE(&encoded, batch.round);
+    WriteBytes32(&encoded, batch.params_hash);
     WriteU64LE(&encoded, (uint64_t)batch.spends.size());
     for (size_t i = 0; i < batch.spends.size(); ++i)
         SerializeSpendTxCanonical(batch.spends[i], &encoded);
@@ -109,6 +111,11 @@ int main()
 
     RoundBatch bad;
     bad.round = 11;
+    if (!ComputeDrpowParamsHash(&bad.params_hash))
+    {
+        printf("params_hash_failed\n");
+        return 11;
+    }
     mint.miner_pubkey = other_id;
     mint.signature = BuildMintSig(*crypto, other_priv, mint);
     bad.mints.push_back(mint);
@@ -127,6 +134,7 @@ int main()
 
     RoundBatch good;
     good.round = 11;
+    good.params_hash = bad.params_hash;
     mint.miner_pubkey = signer_id;
     mint.signature = BuildMintSig(*crypto, signer_priv, mint);
     good.mints.clear();

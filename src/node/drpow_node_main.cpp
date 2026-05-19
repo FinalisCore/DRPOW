@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <sstream>
 #include <stdarg.h>
+#include <stdlib.h>
 
 #include "consensus_round.h"
 #include "crypto_backend.h"
@@ -363,6 +364,7 @@ static std::vector<Validator> DeriveEpochValidatorsDeterministic(const std::vect
 struct MinerCountEntry {
     Bytes32 miner;
     Bytes32 work_score;
+    uint64_t weighted_work_units;
     uint64_t wins;
     uint64_t wins_recent;
     bool incumbent;
@@ -421,6 +423,16 @@ static Bytes32 WorkScoreFromTarget256(const Bytes32& target)
     return out;
 }
 
+static uint64_t WorkUnitsFromTargetTop64(const Bytes32& target)
+{
+    // Deterministic monotone proxy for work cost floor:
+    // smaller target => larger work units.
+    uint64_t t = 0;
+    for (int i = 0; i < 8; ++i)
+        t = (t << 8) | (uint64_t)target.v[i];
+    return ~t;
+}
+
 static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const RegistryStateStore& store,
                                                                   const ValidatorEpoch* prev_epoch,
                                                                   uint64_t epoch,
@@ -438,6 +450,7 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
     struct MinerStats {
         uint64_t wins;
         uint64_t wins_recent;
+        uint64_t weighted_work_units;
         Bytes32 work_score;
     };
     std::map<std::string, MinerStats> stats;
@@ -474,8 +487,15 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
             if (off == 0 && s.wins_recent < UINT64_MAX)
                 s.wins_recent += 1;
             const Bytes32 w = WorkScoreFromTarget256(mint.target);
+            const uint64_t wu = WorkUnitsFromTargetTop64(mint.target);
             for (uint64_t n = 0; n < era_weight; ++n)
+            {
                 AddBytes32Saturating(&s.work_score, w);
+                if (s.weighted_work_units <= UINT64_MAX - wu)
+                    s.weighted_work_units += wu;
+                else
+                    s.weighted_work_units = UINT64_MAX;
+            }
             stats[k] = s;
         }
     }
@@ -495,6 +515,7 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
         memset(e.miner.v, 0, 32);
         memcpy(e.miner.v, it->first.data(), 32);
         e.work_score = it->second.work_score;
+        e.weighted_work_units = it->second.weighted_work_units;
         e.wins = it->second.wins;
         e.wins_recent = it->second.wins_recent;
         e.incumbent = incumbent_ids.count(it->first) != 0;
@@ -526,6 +547,7 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
         max_newcomers = target_size;
     const uint64_t newcomer_min_wins_recent = DrpowParams::kAdmissionPowRecentMinWins;
     const uint64_t incumbent_min_wins_total = DrpowParams::kAdmissionIncumbentMinWins;
+    const uint64_t pow_recent_min_work_units = DrpowParams::kPowRecentMinWorkUnits;
 
     size_t newcomers_added = 0;
     for (size_t i = 0; i < ranked.size() && out.size() < target_size; ++i)
@@ -536,10 +558,16 @@ static std::vector<Validator> DeriveEpochValidatorsFromPowHistory(const Registry
                 continue;
             if (ranked[i].wins_recent < newcomer_min_wins_recent)
                 continue;
+            if (ranked[i].weighted_work_units < pow_recent_min_work_units)
+                continue;
         }
         else if (ranked[i].wins < incumbent_min_wins_total)
         {
             // Incumbents must also show sustained participation over lookback window.
+            continue;
+        }
+        else if (ranked[i].weighted_work_units < pow_recent_min_work_units)
+        {
             continue;
         }
         Validator v;
@@ -586,6 +614,7 @@ static bool BuildBatchHashLocal(const RoundBatch& batch, Bytes32* out)
         return false;
     std::vector<uint8_t> encoded;
     WriteU64LE(&encoded, batch.round);
+    WriteBytes32(&encoded, batch.params_hash);
     WriteU64LE(&encoded, (uint64_t)batch.spends.size());
     for (size_t i = 0; i < batch.spends.size(); ++i)
         SerializeSpendTxCanonical(batch.spends[i], &encoded);
@@ -1018,7 +1047,7 @@ int main(int argc, char** argv)
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
     {
-        printf("crypto_backend_select_failed\n");
+        printf("crypto_backend_select_failed reason=liboqs_required backend=ml_dsa_65 build_hint=USE_LIBOQS=1\n");
         return 4;
     }
 
@@ -1068,6 +1097,38 @@ int main(int argc, char** argv)
     if (!ComputeDrpowParamsHash(&params_hash))
     {
         printf("params_hash_compute_failed\n");
+        return 5;
+    }
+    std::string params_spec_file;
+    if (const char* env_spec = getenv("DRPOW_PARAMS_FILE"))
+        params_spec_file = env_spec;
+    if (params_spec_file.empty())
+    {
+        if (access("DRPOW_PARAMS.md", R_OK) == 0)
+            params_spec_file = "DRPOW_PARAMS.md";
+        else if (access("../DRPOW_PARAMS.md", R_OK) == 0)
+            params_spec_file = "../DRPOW_PARAMS.md";
+    }
+    if (params_spec_file.empty())
+    {
+        printf("params_spec_missing file=DRPOW_PARAMS.md\n");
+        return 5;
+    }
+    Bytes32 params_hash_from_spec;
+    std::string params_spec_err;
+    if (!ComputeDrpowParamsHashFromSpecFile(params_spec_file.c_str(), &params_hash_from_spec, &params_spec_err))
+    {
+        printf("params_spec_parse_failed file=%s err=%s\n",
+               params_spec_file.c_str(),
+               params_spec_err.empty() ? "-" : params_spec_err.c_str());
+        return 5;
+    }
+    if (memcmp(params_hash_from_spec.v, params_hash.v, 32) != 0)
+    {
+        printf("params_spec_hash_mismatch file=%s spec_hash=%s code_hash=%s\n",
+               params_spec_file.c_str(),
+               Hex32(params_hash_from_spec).c_str(),
+               Hex32(params_hash).c_str());
         return 5;
     }
     Bytes32 signer_id;
@@ -1390,36 +1451,68 @@ int main(int argc, char** argv)
         }
         return false;
     };
+    struct PowRecentEligibilityStats {
+        uint64_t wins;
+        uint64_t weighted_work_units;
+    };
+    std::function<void(uint64_t, std::map<std::string, PowRecentEligibilityStats>*)> BuildPowRecentEligibilityMap =
+        [&](uint64_t round, std::map<std::string, PowRecentEligibilityStats>* out_map) {
+            if (!out_map)
+                return;
+            out_map->clear();
+            if (round == 0)
+                return;
+            const uint64_t lookback = DrpowParams::kPowRecentEligibilityLookbackRounds;
+            const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
+            const size_t count = (size_t)(round - from_round);
+            if (count == 0)
+                return;
+            std::vector<RoundCommitRecord> recs;
+            if (!store.ExportVerifiedCommitRecordsFromRound(from_round, count, &recs))
+                return;
+            for (size_t i = 0; i < recs.size(); ++i)
+            {
+                MintTx mint;
+                size_t off = 0;
+                if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
+                                          recs[i].consensus_proof.size(),
+                                          &off,
+                                          &mint) ||
+                    off != recs[i].consensus_proof.size())
+                {
+                    continue;
+                }
+                const uint64_t recency_weight = (uint64_t)(i + 1);
+                const uint64_t work_units = WorkUnitsFromTargetTop64(mint.target);
+                const std::string miner_key((const char*)mint.miner_pubkey.v, 32);
+                PowRecentEligibilityStats s = (*out_map)[miner_key];
+                if (s.wins < UINT64_MAX)
+                    s.wins += 1;
+                const uint64_t add = (work_units > 0 && recency_weight > 0 &&
+                                      work_units > (UINT64_MAX / recency_weight))
+                                         ? UINT64_MAX
+                                         : (work_units * recency_weight);
+                if (s.weighted_work_units <= UINT64_MAX - add)
+                    s.weighted_work_units += add;
+                else
+                    s.weighted_work_units = UINT64_MAX;
+                (*out_map)[miner_key] = s;
+            }
+        };
     std::function<bool(const Bytes32&, uint64_t)> IsPowEligibleForRound = [&](const Bytes32& validator_id, uint64_t round) {
         if (round == 0)
             return false;
-        // Deterministic "eligibility proof path":
-        // A node is considered PoW-eligible if it has at least one successful
-        // committed mint in the most recent admission window.
-        const uint64_t lookback = DrpowParams::kPowRecentEligibilityLookbackRounds;
-        const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
-        const size_t count = (size_t)(round - from_round);
-        if (count == 0)
+        std::map<std::string, PowRecentEligibilityStats> stats;
+        BuildPowRecentEligibilityMap(round, &stats);
+        const std::string id((const char*)validator_id.v, 32);
+        std::map<std::string, PowRecentEligibilityStats>::const_iterator it = stats.find(id);
+        if (it == stats.end())
             return false;
-        std::vector<RoundCommitRecord> recs;
-        if (!store.ExportVerifiedCommitRecordsFromRound(from_round, count, &recs))
+        if (it->second.wins < DrpowParams::kPowRecentMinWins)
             return false;
-        for (size_t i = 0; i < recs.size(); ++i)
-        {
-            MintTx mint;
-            size_t off = 0;
-            if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
-                                      recs[i].consensus_proof.size(),
-                                      &off,
-                                      &mint) ||
-                off != recs[i].consensus_proof.size())
-            {
-                continue;
-            }
-            if (memcmp(mint.miner_pubkey.v, validator_id.v, 32) == 0)
-                return true;
-        }
-        return false;
+        if (it->second.weighted_work_units < DrpowParams::kPowRecentMinWorkUnits)
+            return false;
+        return true;
     };
     std::function<bool(const Bytes32&, uint64_t, uint8_t*)> ResolveVoteEligibilityForRound =
         [&](const Bytes32& validator_id, uint64_t round, uint8_t* out_type) {
@@ -1444,27 +1537,16 @@ int main(int argc, char** argv)
             out_ids->clear();
             if (round == 0)
                 return;
-            const uint64_t lookback = DrpowParams::kPowRecentEligibilityLookbackRounds;
-            const uint64_t from_round = (round > lookback) ? (round - lookback) : 1;
-            const size_t count = (size_t)(round - from_round);
-            if (count == 0)
-                return;
-            std::vector<RoundCommitRecord> recs;
-            if (!store.ExportVerifiedCommitRecordsFromRound(from_round, count, &recs))
-                return;
-            for (size_t i = 0; i < recs.size(); ++i)
+            std::map<std::string, PowRecentEligibilityStats> stats;
+            BuildPowRecentEligibilityMap(round, &stats);
+            for (std::map<std::string, PowRecentEligibilityStats>::const_iterator it = stats.begin();
+                 it != stats.end(); ++it)
             {
-                MintTx mint;
-                size_t off = 0;
-                if (!ParseMintTxCanonical(recs[i].consensus_proof.empty() ? NULL : &recs[i].consensus_proof[0],
-                                          recs[i].consensus_proof.size(),
-                                          &off,
-                                          &mint) ||
-                    off != recs[i].consensus_proof.size())
-                {
+                if (it->second.wins < DrpowParams::kPowRecentMinWins)
                     continue;
-                }
-                out_ids->insert(std::string((const char*)mint.miner_pubkey.v, 32));
+                if (it->second.weighted_work_units < DrpowParams::kPowRecentMinWorkUnits)
+                    continue;
+                out_ids->insert(it->first);
             }
         };
 
@@ -1513,6 +1595,14 @@ int main(int argc, char** argv)
                 printf("catchup_break_qc_batch_mismatch round=%llu qc_round=%llu\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)qc.round);
+                break;
+            }
+            if (memcmp(batch.params_hash.v, params_hash.v, 32) != 0)
+            {
+                printf("catchup_break_params_hash_mismatch round=%llu batch=%s local=%s\n",
+                       (unsigned long long)batch.round,
+                       Hex32(batch.params_hash).c_str(),
+                       Hex32(params_hash).c_str());
                 break;
             }
             if (!EnsureEpochTransitionForRound(batch.round, "catchup"))
@@ -1690,7 +1780,11 @@ int main(int argc, char** argv)
         p->score = std::max(0.0, p->score - dt * decay_units_per_sec);
         p->last_ms = n;
     };
-    auto build_auth_sign_bytes = [&](const Bytes32& challenge, const Bytes32& node_id, std::vector<uint8_t>* out) {
+    auto build_auth_sign_bytes = [&](const Bytes32& challenge,
+                                     const Bytes32& node_id,
+                                     const char* remote_params_version,
+                                     const Bytes32& remote_params_hash,
+                                     std::vector<uint8_t>* out) {
         if (!out)
             return false;
         out->clear();
@@ -1699,6 +1793,11 @@ int main(int argc, char** argv)
             out->push_back((uint8_t)*tag++);
         out->insert(out->end(), challenge.v, challenge.v + 32);
         out->insert(out->end(), node_id.v, node_id.v + 32);
+        const char* pv = remote_params_version ? remote_params_version : "";
+        const size_t pv_n = strlen(pv);
+        WriteU64LE(out, (uint64_t)pv_n);
+        out->insert(out->end(), pv, pv + pv_n);
+        out->insert(out->end(), remote_params_hash.v, remote_params_hash.v + 32);
         return true;
     };
     auto get_rate = [&](int fd) -> PeerRateState& {
@@ -1769,14 +1868,46 @@ int main(int argc, char** argv)
         }
     };
     std::map<std::string, uint64_t> drop_counters;
+    std::map<std::string, uint64_t> reject_counters_total;
+    std::map<std::string, uint64_t> reject_counters_window;
     uint64_t metric_handshake_kept_leg = 0;
     uint64_t metric_handshake_dropped_leg = 0;
     uint64_t metric_handshake_cooldown_hits = 0;
+    uint64_t metric_qc_seen = 0;
+    uint64_t metric_qc_validator_votes = 0;
+    uint64_t metric_qc_pow_recent_votes = 0;
+    uint64_t metric_qc_unknown_votes = 0;
+    uint64_t metric_commit_accepts = 0;
+    uint64_t metric_commit_rejects = 0;
+    uint64_t metric_vote_accepts = 0;
+    uint64_t metric_vote_rejects = 0;
+    uint64_t metric_propose_accepts = 0;
+    uint64_t metric_propose_rejects = 0;
+    uint64_t metric_unsafe_mode_flips = 0;
     uint64_t drop_summary_last_ms = now_ms();
+    bool unsafe_mode = false;
     auto note_drop = [&](const char* reason) {
         if (!reason)
             return;
         drop_counters[std::string(reason)] += 1;
+    };
+    auto note_reject = [&](const char* reason) {
+        if (!reason)
+            return;
+        reject_counters_total[std::string(reason)] += 1;
+        reject_counters_window[std::string(reason)] += 1;
+    };
+    auto observe_qc = [&](const QuorumCertificate& qc) {
+        metric_qc_seen += 1;
+        for (size_t i = 0; i < qc.votes.size(); ++i)
+        {
+            if (qc.votes[i].eligibility_type == VOTE_ELIGIBILITY_VALIDATOR_SET)
+                metric_qc_validator_votes += 1;
+            else if (qc.votes[i].eligibility_type == VOTE_ELIGIBILITY_POW_RECENT)
+                metric_qc_pow_recent_votes += 1;
+            else
+                metric_qc_unknown_votes += 1;
+        }
     };
     auto flush_drop_summary = [&](bool force) {
         const uint64_t now = now_ms();
@@ -1807,6 +1938,62 @@ int main(int argc, char** argv)
         }
         msg += "\n";
         Logf(LOG_NORMAL, "%s", msg.c_str());
+
+        bool next_unsafe_mode = false;
+        std::string unsafe_reasons;
+        const uint64_t params_mismatch_window =
+            reject_counters_window["commit_params_hash_mismatch"] +
+            reject_counters_window["propose_params_hash_mismatch"] +
+            drop_counters["hello_params_mismatch"];
+        const uint64_t unauth_window = drop_counters["unauthenticated_message"];
+        const uint64_t collision_window = drop_counters["hello_peer_id_collision"];
+        const uint64_t unauthorized_votes_window = reject_counters_window["vote_unauthorized_voter"];
+        if (params_mismatch_window > 0)
+        {
+            next_unsafe_mode = true;
+            unsafe_reasons += "params_mismatch ";
+        }
+        if (unauth_window >= 20)
+        {
+            next_unsafe_mode = true;
+            unsafe_reasons += "unauth_spike ";
+        }
+        if (collision_window >= 20)
+        {
+            next_unsafe_mode = true;
+            unsafe_reasons += "collision_spike ";
+        }
+        if (unauthorized_votes_window >= 10)
+        {
+            next_unsafe_mode = true;
+            unsafe_reasons += "unauthorized_votes ";
+        }
+        if (next_unsafe_mode != unsafe_mode)
+        {
+            unsafe_mode = next_unsafe_mode;
+            metric_unsafe_mode_flips += 1;
+            Logf(LOG_NORMAL, "[ALERT] unsafe_mode=%d reasons=%s flips=%llu\n",
+                 unsafe_mode ? 1 : 0,
+                 unsafe_reasons.empty() ? "-" : unsafe_reasons.c_str(),
+                 (unsigned long long)metric_unsafe_mode_flips);
+        }
+        Logf(LOG_NORMAL,
+             "[OBS] unsafe_mode=%d propose_ok=%llu propose_reject=%llu vote_ok=%llu vote_reject=%llu commit_ok=%llu commit_reject=%llu qc_seen=%llu qc_validator_votes=%llu qc_pow_recent_votes=%llu qc_unknown_votes=%llu rej_vote_unauth=%llu rej_commit_qc_invalid=%llu rej_params_mismatch=%llu\n",
+             unsafe_mode ? 1 : 0,
+             (unsigned long long)metric_propose_accepts,
+             (unsigned long long)metric_propose_rejects,
+             (unsigned long long)metric_vote_accepts,
+             (unsigned long long)metric_vote_rejects,
+             (unsigned long long)metric_commit_accepts,
+             (unsigned long long)metric_commit_rejects,
+             (unsigned long long)metric_qc_seen,
+             (unsigned long long)metric_qc_validator_votes,
+             (unsigned long long)metric_qc_pow_recent_votes,
+             (unsigned long long)metric_qc_unknown_votes,
+             (unsigned long long)reject_counters_total["vote_unauthorized_voter"],
+             (unsigned long long)reject_counters_total["commit_qc_invalid"],
+             (unsigned long long)(reject_counters_total["commit_params_hash_mismatch"] + reject_counters_total["propose_params_hash_mismatch"]));
+        reject_counters_window.clear();
         drop_counters.clear();
         drop_summary_last_ms = now;
     };
@@ -2014,13 +2201,13 @@ int main(int argc, char** argv)
                 return;
             }
             std::vector<uint8_t> m;
-            if (!build_auth_sign_bytes(challenge, signer_id, &m))
+            if (!build_auth_sign_bytes(challenge, signer_id, DrpowParamsVersionTag(), params_hash, &m))
                 return;
             std::vector<uint8_t> sig;
             if (!crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &sig))
                 return;
             std::vector<uint8_t> ap;
-            if (!SerializeHelloAuthPayload(signer_id, challenge, sig, &ap))
+            if (!SerializeHelloAuthPayload(signer_id, challenge, DrpowParamsVersionTag(), params_hash, sig, &ap))
                 return;
             WireEnvelope out;
             out.magic = WireMagicMainnet();
@@ -2037,8 +2224,10 @@ int main(int argc, char** argv)
         {
             Bytes32 node_id;
             Bytes32 challenge;
+            Bytes32 remote_params_hash;
+            std::string remote_params_version;
             std::vector<uint8_t> sig;
-            if (!ParseHelloAuthPayload(env.payload, &node_id, &challenge, &sig))
+            if (!ParseHelloAuthPayload(env.payload, &node_id, &challenge, &remote_params_version, &remote_params_hash, &sig))
             {
                 penalize_peer(peer_fd, 10, "hello_auth_parse_failed");
                 reactor.Disconnect(peer_fd);
@@ -2059,7 +2248,7 @@ int main(int argc, char** argv)
                 return;
             }
             std::vector<uint8_t> m;
-            if (!build_auth_sign_bytes(challenge, node_id, &m))
+            if (!build_auth_sign_bytes(challenge, node_id, remote_params_version.c_str(), remote_params_hash, &m))
             {
                 reactor.Disconnect(peer_fd);
                 return;
@@ -2071,6 +2260,21 @@ int main(int argc, char** argv)
                                        sig.size()))
             {
                 penalize_peer(peer_fd, 12, "hello_auth_bad_sig");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            if (remote_params_version != DrpowParamsVersionTag() ||
+                memcmp(remote_params_hash.v, params_hash.v, 32) != 0)
+            {
+                note_drop("hello_params_mismatch");
+                Logf(LOG_NORMAL,
+                     "[HANDSHAKE] reject peer_id=%s endpoint=%s reason=params_mismatch remote_version=%s local_version=%s remote_hash=%s local_hash=%s\n",
+                     Hex32(node_id).c_str(),
+                     reactor.PeerEndpoint(peer_fd).empty() ? "<unknown>" : reactor.PeerEndpoint(peer_fd).c_str(),
+                     remote_params_version.c_str(),
+                     DrpowParamsVersionTag(),
+                     Hex32(remote_params_hash).c_str(),
+                     Hex32(params_hash).c_str());
                 reactor.Disconnect(peer_fd);
                 return;
             }
@@ -2411,11 +2615,25 @@ int main(int argc, char** argv)
             RoundBatch batch;
             if (!ParseRoundBatchPayload(env.payload, &batch))
             {
+                metric_propose_rejects += 1;
+                note_reject("propose_parse_failed");
                 printf("drop propose parse_failed\n");
+                return;
+            }
+            if (memcmp(batch.params_hash.v, params_hash.v, 32) != 0)
+            {
+                metric_propose_rejects += 1;
+                note_reject("propose_params_hash_mismatch");
+                printf("drop propose params_hash_mismatch round=%llu batch=%s local=%s\n",
+                       (unsigned long long)batch.round,
+                       Hex32(batch.params_hash).c_str(),
+                       Hex32(params_hash).c_str());
                 return;
             }
             if (batch.round <= last_committed_round)
             {
+                metric_propose_rejects += 1;
+                note_reject("propose_stale");
                 printf("drop propose stale round=%llu last=%llu\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)last_committed_round);
@@ -2423,6 +2641,8 @@ int main(int argc, char** argv)
             }
             if (!EnsureEpochTransitionForRound(batch.round, "propose"))
             {
+                metric_propose_rejects += 1;
+                note_reject("propose_epoch_transition_invalid");
                 printf("drop propose epoch_transition_invalid round=%llu\n",
                        (unsigned long long)batch.round);
                 return;
@@ -2447,17 +2667,22 @@ int main(int argc, char** argv)
             }
             if (batch.mints.empty())
             {
+                metric_propose_rejects += 1;
+                note_reject("propose_unauthorized_proposer");
                 printf("drop propose unauthorized_proposer round=%llu\n",
                        (unsigned long long)batch.round);
                 return;
             }
             if (!engine.Propose(batch))
             {
+                metric_propose_rejects += 1;
+                note_reject("propose_engine_reject");
                 printf("drop propose invalid code=%d msg=%s\n",
                        (int)engine.last_reject_code(),
                        engine.last_reject_message().c_str());
                 return;
             }
+            metric_propose_accepts += 1;
             if (!IsValidatorForRound(batch.mints[0].miner_pubkey, batch.round))
             {
                 printf("pow_candidate_accepted miner=%s round=%llu batch=%s\n",
@@ -2471,6 +2696,8 @@ int main(int argc, char** argv)
             Vote vote;
             if (!engine.ValidateAndVote(batch, &vote))
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_build_failed");
                 printf("drop propose vote_build_failed\n");
                 return;
             }
@@ -2490,9 +2717,12 @@ int main(int argc, char** argv)
             m.push_back(vote.eligibility_type);
             if (!crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &vote.signature))
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_sign_failed");
                 printf("drop propose vote_sign_failed\n");
                 return;
             }
+            metric_vote_accepts += 1;
             std::vector<uint8_t> vote_payload;
             if (!SerializeVotePayload(vote, &vote_payload))
                 return;
@@ -2513,11 +2743,15 @@ int main(int argc, char** argv)
             Vote vote;
             if (!ParseVotePayload(env.payload, &vote))
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_parse_failed");
                 printf("drop vote parse_failed\n");
                 return;
             }
             if (vote.round <= last_committed_round)
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_stale");
                 printf("drop vote stale round=%llu last=%llu\n",
                        (unsigned long long)vote.round,
                        (unsigned long long)last_committed_round);
@@ -2525,6 +2759,8 @@ int main(int argc, char** argv)
             }
             if (!EnsureEpochTransitionForRound(vote.round, "vote"))
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_epoch_transition_invalid");
                 printf("drop vote epoch_transition_invalid round=%llu\n",
                        (unsigned long long)vote.round);
                 return;
@@ -2532,12 +2768,16 @@ int main(int argc, char** argv)
             uint8_t expected_vote_type = 0;
             if (!ResolveVoteEligibilityForRound(vote.validator_id, vote.round, &expected_vote_type))
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_unauthorized_voter");
                 printf("drop vote unauthorized_voter round=%llu\n",
                        (unsigned long long)vote.round);
                 return;
             }
             if (vote.eligibility_type != expected_vote_type)
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_eligibility_mismatch");
                 printf("drop vote eligibility_mismatch round=%llu got=%u expected=%u\n",
                        (unsigned long long)vote.round,
                        (unsigned)vote.eligibility_type,
@@ -2546,6 +2786,8 @@ int main(int argc, char** argv)
             }
             if (!vote_verifier.VerifyVote(vote))
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_bad_sig");
                 printf("drop vote bad_sig\n");
                 return;
             }
@@ -2553,11 +2795,15 @@ int main(int argc, char** argv)
             std::map<std::string, RoundBatch>::const_iterator itb = known_batches.find(k);
             if (itb == known_batches.end())
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_unknown_batch");
                 printf("drop vote unknown_batch\n");
                 return;
             }
             if (vote.round != itb->second.round)
             {
+                metric_vote_rejects += 1;
+                note_reject("vote_round_mismatch");
                 printf("drop vote round_mismatch vote=%llu batch=%llu\n",
                        (unsigned long long)vote.round,
                        (unsigned long long)itb->second.round);
@@ -2582,6 +2828,7 @@ int main(int argc, char** argv)
                 if (!HasSupermajorityPowerTyped(epoch, qc, pow_recent_ids, DrpowParams::kPowRecentVoteWeight))
                     return;
             }
+            observe_qc(qc);
             if (!(IsValidatorForRound(signer_id, itb->second.round) || IsPowEligibleForRound(signer_id, itb->second.round)))
             {
                 printf("sync_only skip_commit_broadcast round=%llu\n",
@@ -2609,11 +2856,25 @@ int main(int argc, char** argv)
             QuorumCertificate qc;
             if (!ParseCommitPayload(env.payload, &batch, &qc))
             {
+                metric_commit_rejects += 1;
+                note_reject("commit_parse_failed");
                 printf("drop commit parse_failed\n");
+                return;
+            }
+            if (memcmp(batch.params_hash.v, params_hash.v, 32) != 0)
+            {
+                metric_commit_rejects += 1;
+                note_reject("commit_params_hash_mismatch");
+                printf("drop commit params_hash_mismatch round=%llu batch=%s local=%s\n",
+                       (unsigned long long)batch.round,
+                       Hex32(batch.params_hash).c_str(),
+                       Hex32(params_hash).c_str());
                 return;
             }
             if (batch.round <= last_committed_round)
             {
+                metric_commit_rejects += 1;
+                note_reject("commit_stale");
                 printf("drop commit stale round=%llu last=%llu\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)last_committed_round);
@@ -2621,12 +2882,16 @@ int main(int argc, char** argv)
             }
             if (!EnsureEpochTransitionForRound(batch.round, "commit"))
             {
+                metric_commit_rejects += 1;
+                note_reject("commit_epoch_transition_invalid");
                 printf("drop commit epoch_transition_invalid round=%llu\n",
                        (unsigned long long)batch.round);
                 return;
             }
             if (qc.round != batch.round || memcmp(qc.batch_hash.v, batch.batch_hash.v, 32) != 0)
             {
+                metric_commit_rejects += 1;
+                note_reject("commit_qc_batch_mismatch");
                 printf("drop commit qc_batch_mismatch\n");
                 return;
             }
@@ -2635,6 +2900,8 @@ int main(int argc, char** argv)
                 ValidatorEpoch epoch;
                 if (!vset.GetEpochForRound(batch.round, &epoch))
                 {
+                    metric_commit_rejects += 1;
+                    note_reject("commit_epoch_missing");
                     printf("drop commit epoch_missing\n");
                     return;
                 }
@@ -2642,17 +2909,23 @@ int main(int argc, char** argv)
                 BuildPowEligibleIdSetForRound(batch.round, &pow_recent_ids);
                 if (!VerifyQuorumCertificateTyped(epoch, qc, batch.round, batch.batch_hash, pow_recent_ids, DrpowParams::kPowRecentVoteWeight, vote_verifier))
                 {
+                    metric_commit_rejects += 1;
+                    note_reject("commit_qc_invalid");
                     printf("drop commit qc_invalid\n");
                     return;
                 }
             }
             if (!engine.Commit(batch, qc))
             {
+                metric_commit_rejects += 1;
+                note_reject("commit_engine_reject");
                 printf("drop commit invalid code=%d msg=%s\n",
                        (int)engine.last_reject_code(),
                        engine.last_reject_message().c_str());
                 return;
             }
+            metric_commit_accepts += 1;
+            observe_qc(qc);
             if (!AppendCommitPayloadCacheDedup(commit_payload_cache, env.payload))
                 printf("cache_append_failed source=wire_commit round=%llu\n", (unsigned long long)batch.round);
             last_committed_round = batch.round;
@@ -2691,6 +2964,21 @@ int main(int argc, char** argv)
            cfg.duration_sec);
     Logf(LOG_NORMAL, "[BOOT] params_version=%s\n", DrpowParamsVersionTag());
     Logf(LOG_NORMAL, "[BOOT] params_hash=%s\n", Hex32(params_hash).c_str());
+    {
+        std::string pq_db_path;
+        bool pq_parent_owner_only = false;
+        bool pq_file_exists = false;
+        bool pq_file_owner_only = false;
+        if (GetPqcKeyDbSelfCheck(&pq_db_path, &pq_parent_owner_only, &pq_file_exists, &pq_file_owner_only))
+        {
+            Logf(LOG_NORMAL,
+                 "[BOOT] pq_key_db path=%s parent_owner_only=%d file_exists=%d file_owner_only=%d\n",
+                 pq_db_path.c_str(),
+                 pq_parent_owner_only ? 1 : 0,
+                 pq_file_exists ? 1 : 0,
+                 pq_file_owner_only ? 1 : 0);
+        }
+    }
     Logf(LOG_NORMAL, "[BOOT] network_magic=0x%08x\n", (unsigned)cfg.network_magic);
     Logf(LOG_NORMAL, "[BOOT] validator_set size=%zu\n", vals.size());
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
@@ -2805,6 +3093,7 @@ int main(int argc, char** argv)
             if (!have_pending)
             {
                 batch.round = target_round;
+                batch.params_hash = params_hash;
                 std::vector<SpendTx> drained_spends = mempool.DrainSpends(dynamic_max_spends_per_round);
                 batch.spends = drained_spends;
                 MintTx mint;
@@ -2977,6 +3266,8 @@ int main(int argc, char** argv)
                             {
                                 if (engine.Commit(batch, local_qc))
                                 {
+                                    metric_commit_accepts += 1;
+                                    observe_qc(local_qc);
                                     std::vector<uint8_t> local_commit_payload;
                                     if (!SerializeCommitPayload(batch, local_qc, &local_commit_payload))
                                     {
@@ -3012,6 +3303,8 @@ int main(int argc, char** argv)
                                 }
                                 else
                                 {
+                                    metric_commit_rejects += 1;
+                                    note_reject("local_commit_engine_reject");
                                     Logf(LOG_NORMAL, "[COMMIT][REJECT] round=%llu code=%d reason=%s\n",
                                            (unsigned long long)batch.round,
                                            (int)engine.last_reject_code(),

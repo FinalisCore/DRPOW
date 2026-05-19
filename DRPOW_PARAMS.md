@@ -26,6 +26,8 @@ Interpretation:
 
 - `kPowRecentEligibilityLookbackRounds = 10` (equal to epoch length)
 - `kPowRecentVoteWeight = 1`
+- `kPowRecentMinWins = 2`
+- `kPowRecentMinWorkUnits = 3000`
 
 Typed QC denominator:
 
@@ -48,4 +50,3 @@ Implementations MUST:
 - use these exact values in consensus-critical code paths,
 - reject mixed configurations at runtime for the same network magic,
 - version/announce parameter changes as protocol upgrades.
-

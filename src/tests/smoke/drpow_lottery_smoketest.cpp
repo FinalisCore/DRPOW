@@ -4,6 +4,7 @@
 
 #include "consensus_round.h"
 #include "crypto_backend.h"
+#include "drpow_params.h"
 #include "pow_lottery_validator_set.h"
 #include "proof_verifier.h"
 #include "registry_state_store.h"
@@ -42,6 +43,7 @@ static bool BuildBatchHash(const RoundBatch& batch, Bytes32* out)
         return false;
     std::vector<uint8_t> encoded;
     WriteU64LE(&encoded, batch.round);
+    WriteBytes32(&encoded, batch.params_hash);
 
     WriteU64LE(&encoded, (uint64_t)batch.spends.size());
     for (size_t i = 0; i < batch.spends.size(); ++i)
@@ -140,6 +142,11 @@ int main()
         mint.target.v[i] = 0xff;
     RoundBatch batch;
     batch.round = 1;
+    if (!ComputeDrpowParamsHash(&batch.params_hash))
+    {
+        printf("params_hash_failed\n");
+        return 11;
+    }
 
     std::vector< std::vector<uint8_t> > validator_privs(epoch_validators.size(), std::vector<uint8_t>(32, 0));
     for (size_t i = 0; i < epoch_validators.size(); ++i)

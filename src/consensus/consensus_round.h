@@ -47,6 +47,7 @@ struct RoundBatch {
     uint64_t round;
     std::vector<SpendTx> spends;
     std::vector<MintTx> mints;
+    Bytes32 params_hash;
     Bytes32 batch_hash;
 };
 
