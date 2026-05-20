@@ -320,6 +320,41 @@ bool ParseVotePayload(const std::vector<uint8_t>& in, Vote* out)
     return true;
 }
 
+bool SerializeTimeoutVotePayload(const TimeoutVote& vote, std::vector<uint8_t>* out)
+{
+    if (!out)
+        return false;
+    out->clear();
+    WriteU64LE(out, vote.round);
+    WriteBytes32(out, vote.validator_id);
+    WriteBytes32(out, vote.lock_batch_hash);
+    WriteU64LE(out, (uint64_t)vote.signature.size());
+    out->insert(out->end(), vote.signature.begin(), vote.signature.end());
+    return true;
+}
+
+bool ParseTimeoutVotePayload(const std::vector<uint8_t>& in, TimeoutVote* out)
+{
+    if (!out || in.empty())
+        return false;
+    size_t off = 0;
+    TimeoutVote v;
+    uint64_t sig_n = 0;
+    if (!ReadU64LELocal(&in[0], in.size(), &off, &v.round))
+        return false;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, v.validator_id.v, 32))
+        return false;
+    if (!ReadBytesLocal(&in[0], in.size(), &off, v.lock_batch_hash.v, 32))
+        return false;
+    if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))
+        return false;
+    if (sig_n > in.size() || off + (size_t)sig_n != in.size())
+        return false;
+    v.signature.assign(in.begin() + off, in.end());
+    *out = v;
+    return true;
+}
+
 static bool SerializeQcLocal(const QuorumCertificate& qc, std::vector<uint8_t>* out)
 {
     if (!out)

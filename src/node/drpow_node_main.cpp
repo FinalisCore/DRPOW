@@ -964,6 +964,9 @@ int main(int argc, char** argv)
     std::map<uint64_t, uint64_t> round_first_seen_ms;
     std::map<uint64_t, std::set<std::string> > round_candidate_keys;
     std::map<uint64_t, std::set<std::string> > round_vote_batch_keys;
+    std::map<uint64_t, std::map<std::string, TimeoutVote> > timeout_votes_by_round;
+    std::set<uint64_t> timeout_qc_rounds;
+    std::set<uint64_t> timeout_vote_sent_rounds;
     std::map<uint64_t, int> round_mode_state;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     const uint64_t startup_registry_bytes = FileSizeBytes(registry);
@@ -1173,6 +1176,9 @@ int main(int argc, char** argv)
             round_first_seen_ms.erase(r);
             round_candidate_keys.erase(r);
             round_vote_batch_keys.erase(r);
+            timeout_votes_by_round.erase(r);
+            timeout_qc_rounds.erase(r);
+            timeout_vote_sent_rounds.erase(r);
             local_vote_by_round.erase(r);
             round_mode_state.erase(r);
         }
@@ -1205,6 +1211,18 @@ int main(int argc, char** argv)
         const size_t n = 1 + peer_last_round.size();
         const size_t q = ((2 * n) / 3) + 1;
         return q > 0 ? q : 1;
+    };
+    auto BuildTimeoutSignMessage = [&](const TimeoutVote& tv, std::vector<uint8_t>* out) -> bool {
+        if (!out)
+            return false;
+        out->clear();
+        const char* tag = "DRPOW:timeout_vote:v1";
+        while (*tag)
+            out->push_back((uint8_t)*tag++);
+        WriteU64LE(out, tv.round);
+        WriteBytes32(out, tv.validator_id);
+        WriteBytes32(out, tv.lock_batch_hash);
+        return true;
     };
     auto EnsureLocalVoteForRound = [&](uint64_t round, const Bytes32& batch_hash) -> bool {
         std::map<uint64_t, Bytes32>::const_iterator it = local_vote_by_round.find(round);
@@ -1771,7 +1789,7 @@ int main(int argc, char** argv)
             bucket = &rs.tokens_tx;
             cost = 1.0;
         }
-        else if (msg_type == WIRE_MSG_PROPOSE || msg_type == WIRE_MSG_VOTE || msg_type == WIRE_MSG_COMMIT)
+        else if (msg_type == WIRE_MSG_PROPOSE || msg_type == WIRE_MSG_VOTE || msg_type == WIRE_MSG_COMMIT || msg_type == WIRE_MSG_TIMEOUT_VOTE)
         {
             bucket = &rs.tokens_consensus;
             cost = (msg_type == WIRE_MSG_COMMIT) ? 4.0 : 2.0;
@@ -1792,7 +1810,7 @@ int main(int argc, char** argv)
             penalize_peer(peer_fd, 5, "payload_len_mismatch");
             return;
         }
-        if (env.msg_type > WIRE_MSG_HELLO_AUTH)
+        if (env.msg_type > WIRE_MSG_TIMEOUT_VOTE)
         {
             printf("drop malformed msg_type=%u fd=%d\n", (unsigned)env.msg_type, peer_fd);
             penalize_peer(peer_fd, 5, "unknown_msg_type");
@@ -2227,7 +2245,7 @@ int main(int argc, char** argv)
         std::map<int, uint64_t>::const_iterator it_peer_round = peer_last_round.find(peer_fd);
         if (it_peer_round != peer_last_round.end() &&
             it_peer_round->second < last_committed_round &&
-            (env.msg_type == WIRE_MSG_PROPOSE || env.msg_type == WIRE_MSG_VOTE || env.msg_type == WIRE_MSG_COMMIT))
+            (env.msg_type == WIRE_MSG_PROPOSE || env.msg_type == WIRE_MSG_VOTE || env.msg_type == WIRE_MSG_COMMIT || env.msg_type == WIRE_MSG_TIMEOUT_VOTE))
         {
             printf("drop from_stale_peer peer=%d peer_round=%llu local=%llu\n",
                    peer_fd,
@@ -2236,7 +2254,7 @@ int main(int argc, char** argv)
             return;
         }
         if (last_committed_round < synced_last_round &&
-            (env.msg_type == WIRE_MSG_PROPOSE || env.msg_type == WIRE_MSG_VOTE || env.msg_type == WIRE_MSG_COMMIT))
+            (env.msg_type == WIRE_MSG_PROPOSE || env.msg_type == WIRE_MSG_VOTE || env.msg_type == WIRE_MSG_COMMIT || env.msg_type == WIRE_MSG_TIMEOUT_VOTE))
         {
             printf("drop catchup_required local_round=%llu synced_round=%llu\n",
                    (unsigned long long)last_committed_round,
@@ -2583,6 +2601,49 @@ int main(int argc, char** argv)
                 printf("drop commit send_failed\n");
             return;
         }
+        if (env.msg_type == WIRE_MSG_TIMEOUT_VOTE)
+        {
+            TimeoutVote tv;
+            if (!ParseTimeoutVotePayload(env.payload, &tv))
+            {
+                note_reject("timeout_vote_parse_failed");
+                return;
+            }
+            if (tv.round <= last_committed_round)
+            {
+                note_reject("timeout_vote_stale");
+                return;
+            }
+            std::vector<uint8_t> m;
+            if (!BuildTimeoutSignMessage(tv, &m))
+            {
+                note_reject("timeout_vote_signmsg_failed");
+                return;
+            }
+            if (!crypto->VerifyEd25519(tv.validator_id.v,
+                                       m.empty() ? NULL : &m[0],
+                                       m.size(),
+                                       tv.signature.empty() ? NULL : &tv.signature[0],
+                                       tv.signature.size()))
+            {
+                note_reject("timeout_vote_bad_sig");
+                return;
+            }
+            const std::string voter_key((const char*)tv.validator_id.v, 32);
+            timeout_votes_by_round[tv.round][voter_key] = tv;
+            const size_t min_votes = DynamicMinVotes();
+            const size_t have_votes = timeout_votes_by_round[tv.round].size();
+            if (have_votes >= min_votes && !timeout_qc_rounds.count(tv.round))
+            {
+                timeout_qc_rounds.insert(tv.round);
+                Logf(LOG_NORMAL,
+                     "[TIMEOUT_QC] round=%llu votes=%zu min_votes=%zu status=formed\n",
+                     (unsigned long long)tv.round,
+                     have_votes,
+                     min_votes);
+            }
+            return;
+        }
         if (env.msg_type == WIRE_MSG_COMMIT)
         {
             RoundBatch batch;
@@ -2751,8 +2812,10 @@ int main(int argc, char** argv)
          cfg.pow_target_prefix_bytes,
          Hex32(economics_policy.max_target).c_str());
     const uint64_t proposal_window_ms = ParseEnvU64Clamped("PROPOSAL_WINDOW_MS", 3000ULL, 100ULL, 10000ULL);
+    const uint64_t round_timeout_ms = ParseEnvU64Clamped("ROUND_TIMEOUT_MS", 45000ULL, 5000ULL, 180000ULL);
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
     Logf(LOG_NORMAL, "[BOOT] proposal_window_ms=%llu\n", (unsigned long long)proposal_window_ms);
+    Logf(LOG_NORMAL, "[BOOT] round_timeout_ms=%llu\n", (unsigned long long)round_timeout_ms);
     Logf(LOG_NORMAL, "[BOOT] sync_policy=sync_first\n");
     Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
     Logf(LOG_NORMAL, "[BOOT] commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
@@ -3093,7 +3156,51 @@ int main(int argc, char** argv)
         }
         const bool autopropose_sync_gate_ok = is_synced_or_standalone && !sync_first;
         const uint64_t target_round = last_committed_round + 1;
+        if (cfg.autopropose != 0 && autopropose_sync_gate_ok && have_peers &&
+            (uint64_t)no_progress_sec * 1000ULL >= round_timeout_ms &&
+            !timeout_vote_sent_rounds.count(target_round))
+        {
+            TimeoutVote tv;
+            tv.round = target_round;
+            tv.validator_id = signer_id;
+            std::map<uint64_t, std::string>::const_iterator it_best = round_best_batch_key.find(target_round);
+            if (it_best != round_best_batch_key.end() && it_best->second.size() == 32)
+                memcpy(tv.lock_batch_hash.v, it_best->second.data(), 32);
+            std::vector<uint8_t> m;
+            if (BuildTimeoutSignMessage(tv, &m) &&
+                crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &tv.signature))
+            {
+                timeout_votes_by_round[target_round][std::string((const char*)signer_id.v, 32)] = tv;
+                timeout_vote_sent_rounds.insert(target_round);
+                std::vector<uint8_t> payload;
+                if (SerializeTimeoutVotePayload(tv, &payload))
+                {
+                    WireEnvelope outt;
+                    outt.magic = WireMagicMainnet();
+                    outt.version = 1;
+                    outt.msg_type = WIRE_MSG_TIMEOUT_VOTE;
+                    outt.payload_len = (uint32_t)payload.size();
+                    outt.unix_ms = 0;
+                    outt.payload_hash = Bytes32();
+                    outt.payload.swap(payload);
+                    (void)reactor.Broadcast(outt);
+                    Logf(LOG_NORMAL,
+                         "[TIMEOUT] emit round=%llu no_progress_sec=%d min_votes=%zu\n",
+                         (unsigned long long)target_round,
+                         no_progress_sec,
+                         DynamicMinVotes());
+                }
+            }
+        }
         auto IsLocalRoundLeader = [&](uint64_t round, Bytes32* out_winner, size_t* out_n) -> bool {
+            if (timeout_qc_rounds.count(round))
+            {
+                if (out_winner)
+                    *out_winner = signer_id;
+                if (out_n)
+                    *out_n = 1 + peer_node_id_by_fd.size();
+                return true;
+            }
             std::set<std::string> uniq;
             uniq.insert(Bytes32Key(signer_id));
             for (std::map<int, Bytes32>::const_iterator it = peer_node_id_by_fd.begin(); it != peer_node_id_by_fd.end(); ++it)
