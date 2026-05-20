@@ -1593,6 +1593,9 @@ int main(int argc, char** argv)
         const uint64_t round = batch.round;
         if (round <= last_committed_round)
             return;
+        const std::string batch_key = Bytes32Key(batch.batch_hash);
+        if (!known_batches.count(batch_key))
+            known_batches[batch_key] = batch;
         std::map<uint64_t, int>::const_iterator it_mode = round_mode_state.find(round);
         if (it_mode != round_mode_state.end() && it_mode->second == ROUND_MODE_VOTED_LOCKED)
         {
@@ -1603,9 +1606,6 @@ int main(int argc, char** argv)
             return;
         }
         SetRoundMode(round, ROUND_MODE_VERIFY_VOTE, "proposal_seen");
-        const std::string batch_key = Bytes32Key(batch.batch_hash);
-        if (!known_batches.count(batch_key))
-            known_batches[batch_key] = batch;
         uint64_t now_round_ms = NowMonotonicMs();
         if (!round_first_seen_ms.count(round))
             round_first_seen_ms[round] = now_round_ms;
