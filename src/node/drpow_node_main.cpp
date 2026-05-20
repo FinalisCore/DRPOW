@@ -2811,44 +2811,47 @@ int main(int argc, char** argv)
                 return;
             }
             const uint64_t mint0_precheck = batch.mints.empty() ? 0 : batch.mints[0].output.value;
-            if (engine.Commit(batch, local_qc))
+            // Commit may be followed by cache purge that erases known_batches[batch],
+            // so keep a stable copy for post-commit logging/accounting.
+            const RoundBatch committed_batch = batch;
+            if (engine.Commit(committed_batch, local_qc))
             {
                 metric_commit_accepts += 1;
                 observe_qc(local_qc);
                 std::vector<uint8_t> local_commit_payload;
-                if (!SerializeCommitPayload(batch, local_qc, &local_commit_payload))
-                    printf("cache_serialize_failed source=local_commit round=%llu\n", (unsigned long long)batch.round);
+                if (!SerializeCommitPayload(committed_batch, local_qc, &local_commit_payload))
+                    printf("cache_serialize_failed source=local_commit round=%llu\n", (unsigned long long)committed_batch.round);
                 else if (!AppendCommitPayloadCacheDedup(commit_payload_cache, local_commit_payload))
-                    printf("cache_append_failed source=local_commit round=%llu\n", (unsigned long long)batch.round);
-                last_committed_round = batch.round;
+                    printf("cache_append_failed source=local_commit round=%llu\n", (unsigned long long)committed_batch.round);
+                last_committed_round = committed_batch.round;
                 last_progress_round = last_committed_round;
                 last_progress_time = time(NULL);
-                RememberCommitTarget(batch.round, batch.batch_hash);
+                RememberCommitTarget(committed_batch.round, committed_batch.batch_hash);
                 AdvanceSyncedTipFromCommit(last_committed_round);
                 PurgeCommittedPending(last_committed_round);
-                const uint64_t minted = SumBatchMintValue(batch);
-                const uint64_t fees = SumBatchFees(batch);
-                const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
-                if (minted != minted_precheck || (!batch.mints.empty() && batch.mints[0].output.value != mint0_precheck))
+                const uint64_t minted = SumBatchMintValue(committed_batch);
+                const uint64_t fees = SumBatchFees(committed_batch);
+                const uint64_t subsidy = MintSubsidyForRound(committed_batch.round, economics_policy);
+                if (minted != minted_precheck || (!committed_batch.mints.empty() && committed_batch.mints[0].output.value != mint0_precheck))
                 {
                     Logf(LOG_NORMAL,
                          "fatal commit_post_batch_mutation round=%llu minted_now=%llu minted_pre=%llu mint0_now=%llu mint0_pre=%llu mints=%zu batch=%s\n",
-                         (unsigned long long)batch.round,
+                         (unsigned long long)committed_batch.round,
                          (unsigned long long)minted,
                          (unsigned long long)minted_precheck,
-                         (unsigned long long)(batch.mints.empty() ? 0 : batch.mints[0].output.value),
+                         (unsigned long long)(committed_batch.mints.empty() ? 0 : committed_batch.mints[0].output.value),
                          (unsigned long long)mint0_precheck,
-                         batch.mints.size(),
-                         Hex32(batch.batch_hash).c_str());
+                         committed_batch.mints.size(),
+                         Hex32(committed_batch.batch_hash).c_str());
                     fflush(stdout);
                     abort();
                 }
-                const std::string miner_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].miner_pubkey);
-                const std::string target_hex = batch.mints.empty() ? "-" : Hex32(batch.mints[0].target);
+                const std::string miner_hex = committed_batch.mints.empty() ? "-" : Hex32(committed_batch.mints[0].miner_pubkey);
+                const std::string target_hex = committed_batch.mints.empty() ? "-" : Hex32(committed_batch.mints[0].target);
                 Logf(LOG_NORMAL, "[COMMIT] ok round=%llu spends=%zu mints=%zu minted=%llu minted_drpow=%s fees=%llu fees_drpow=%s subsidy=%llu subsidy_drpow=%s miner=%s target=%s\n",
-                       (unsigned long long)batch.round,
-                       batch.spends.size(),
-                       batch.mints.size(),
+                       (unsigned long long)committed_batch.round,
+                       committed_batch.spends.size(),
+                       committed_batch.mints.size(),
                        (unsigned long long)minted,
                        FormatAtomic8(minted).c_str(),
                        (unsigned long long)fees,
