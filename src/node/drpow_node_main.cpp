@@ -68,6 +68,23 @@ static uint64_t NowMonotonicMs()
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000ULL);
 }
 
+static uint64_t ParseEnvU64Clamped(const char* name, uint64_t def, uint64_t min_v, uint64_t max_v)
+{
+    const char* s = getenv(name);
+    if (!s || !*s)
+        return def;
+    char* end = NULL;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (end == s || (end && *end != '\0'))
+        return def;
+    uint64_t out = (uint64_t)v;
+    if (out < min_v)
+        out = min_v;
+    if (out > max_v)
+        out = max_v;
+    return out;
+}
+
 static std::string FormatAtomic8(uint64_t units)
 {
     static const uint64_t kAtomicPerCoin = 100000000ULL;
@@ -2722,7 +2739,9 @@ int main(int argc, char** argv)
          "[BOOT] pow_target_prefix_bytes=%d max_target=%s\n",
          cfg.pow_target_prefix_bytes,
          Hex32(economics_policy.max_target).c_str());
+    const uint64_t proposal_window_ms = ParseEnvU64Clamped("PROPOSAL_WINDOW_MS", 3000ULL, 100ULL, 10000ULL);
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
+    Logf(LOG_NORMAL, "[BOOT] proposal_window_ms=%llu\n", (unsigned long long)proposal_window_ms);
     Logf(LOG_NORMAL, "[BOOT] sync_policy=sync_first\n");
     Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
     Logf(LOG_NORMAL, "[BOOT] commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
@@ -2734,7 +2753,6 @@ int main(int argc, char** argv)
            CountCommitPayloadCacheEntries(commit_payload_cache));
     BroadcastSyncStatus();
     std::function<void(uint64_t)> TryVoteCanonicalRound = [&](uint64_t round) {
-        const uint64_t kProposalWindowMs = 600;
         if (round <= last_committed_round)
             return;
         if (local_vote_by_round.count(round))
@@ -2744,7 +2762,7 @@ int main(int argc, char** argv)
         if (it_key == round_best_batch_key.end() || it_seen == round_first_seen_ms.end())
             return;
         const uint64_t now_ms = NowMonotonicMs();
-        if (now_ms < it_seen->second || (now_ms - it_seen->second) < kProposalWindowMs)
+        if (now_ms < it_seen->second || (now_ms - it_seen->second) < proposal_window_ms)
             return;
         std::map<std::string, RoundBatch>::const_iterator it_batch = known_batches.find(it_key->second);
         if (it_batch == known_batches.end())
