@@ -931,6 +931,32 @@ int main(int argc, char** argv)
     }
     printf("signer_id=%s\n", Hex32(signer_id).c_str());
 
+    std::set<std::string> committee_keyset;
+    std::vector<Bytes32> committee_validators;
+    for (size_t i = 0; i < cfg.validator_pubkeys_hex.size(); ++i)
+    {
+        Bytes32 vid;
+        if (!HexTo32(cfg.validator_pubkeys_hex[i], vid.v))
+        {
+            printf("validator_pubkey_invalid index=%zu value=%s\n", i, cfg.validator_pubkeys_hex[i].c_str());
+            return 6;
+        }
+        const std::string k = Bytes32Key(vid);
+        if (committee_keyset.insert(k).second)
+            committee_validators.push_back(vid);
+    }
+    if (committee_validators.empty())
+    {
+        committee_keyset.insert(Bytes32Key(signer_id));
+        committee_validators.push_back(signer_id);
+    }
+    if (!committee_keyset.count(Bytes32Key(signer_id)))
+    {
+        printf("validator_set_missing_local_signer signer_id=%s\n", Hex32(signer_id).c_str());
+        return 6;
+    }
+    Logf(LOG_NORMAL, "[BOOT] validator_set_size=%zu\n", committee_validators.size());
+
     ProofPolicy proof_policy = DefaultProofPolicy();
     BasicProofVerifier proof_verifier(crypto.get(), &proof_policy);
     BasicVoteVerifier vote_verifier(crypto.get());
@@ -967,6 +993,11 @@ int main(int argc, char** argv)
     std::map<uint64_t, std::map<std::string, TimeoutVote> > timeout_votes_by_round;
     std::set<uint64_t> timeout_qc_rounds;
     std::set<uint64_t> timeout_vote_sent_rounds;
+    std::map<int, uint64_t> peer_last_sync_req_sent_ms;
+    double rtt_ewma_ms = 0.0;
+    uint64_t rtt_sample_count = 0;
+    uint64_t adaptive_proposal_window_ms = 3000ULL;
+    uint64_t adaptive_round_timeout_ms = 45000ULL;
     std::map<uint64_t, int> round_mode_state;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     const uint64_t startup_registry_bytes = FileSizeBytes(registry);
@@ -1208,9 +1239,27 @@ int main(int argc, char** argv)
         return key;
     };
     auto DynamicMinVotes = [&]() -> size_t {
-        const size_t n = 1 + peer_last_round.size();
+        const size_t n = committee_validators.size();
         const size_t q = ((2 * n) / 3) + 1;
         return q > 0 ? q : 1;
+    };
+    auto IsCommitteeValidator = [&](const Bytes32& id) -> bool {
+        return committee_keyset.count(Bytes32Key(id)) != 0;
+    };
+    auto QcHasCommitteeQuorum = [&](const QuorumCertificate& qc, size_t min_votes) -> bool {
+        std::set<std::string> seen;
+        size_t cnt = 0;
+        for (size_t i = 0; i < qc.votes.size(); ++i)
+        {
+            const Vote& v = qc.votes[i];
+            const std::string k((const char*)v.validator_id.v, 32);
+            if (seen.count(k))
+                return false;
+            seen.insert(k);
+            if (committee_keyset.count(k))
+                ++cnt;
+        }
+        return cnt >= min_votes;
     };
     auto BuildTimeoutSignMessage = [&](const TimeoutVote& tv, std::vector<uint8_t>* out) -> bool {
         if (!out)
@@ -1315,11 +1364,20 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 break;
             }
+            const size_t min_votes = DynamicMinVotes();
+            if (!QcHasCommitteeQuorum(qc, min_votes))
+            {
+                printf("catchup_break_qc_non_committee_or_insufficient round=%llu votes=%zu min_votes=%zu\n",
+                       (unsigned long long)batch.round,
+                       qc.votes.size(),
+                       min_votes);
+                break;
+            }
             if (!VerifyQuorumCertificatePow(qc,
                                             batch.round,
                                             batch.batch_hash,
                                             expected_target,
-                                            DynamicMinVotes(),
+                                            min_votes,
                                             vote_verifier))
             {
                 printf("catchup_break_qc_invalid round=%llu votes=%zu\n",
@@ -2225,6 +2283,7 @@ int main(int argc, char** argv)
                 std::vector<uint8_t> req_payload;
                 if (SerializeSyncRequestPayload(last_committed_round + 1, 64, &req_payload))
                 {
+                    peer_last_sync_req_sent_ms[peer_fd] = NowMonotonicMs();
                     WireEnvelope req;
                     req.magic = WireMagicMainnet();
                     req.version = 1;
@@ -2326,6 +2385,26 @@ int main(int argc, char** argv)
             {
                 printf("drop sync_response parse_failed\n");
                 return;
+            }
+            {
+                std::map<int, uint64_t>::iterator it_req_ms = peer_last_sync_req_sent_ms.find(peer_fd);
+                if (it_req_ms != peer_last_sync_req_sent_ms.end())
+                {
+                    const uint64_t now_ms = NowMonotonicMs();
+                    if (now_ms >= it_req_ms->second)
+                    {
+                        const uint64_t rtt_sample_ms = now_ms - it_req_ms->second;
+                        if (rtt_sample_ms >= 1 && rtt_sample_ms <= 300000)
+                        {
+                            if (rtt_sample_count == 0)
+                                rtt_ewma_ms = (double)rtt_sample_ms;
+                            else
+                                rtt_ewma_ms = (0.85 * rtt_ewma_ms) + (0.15 * (double)rtt_sample_ms);
+                            rtt_sample_count++;
+                        }
+                    }
+                    peer_last_sync_req_sent_ms.erase(it_req_ms);
+                }
             }
             size_t accepted = 0;
             uint64_t max_round = 0;
@@ -2459,6 +2538,15 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 return;
             }
+            if (!IsCommitteeValidator(batch.mints[0].miner_pubkey))
+            {
+                metric_propose_rejects += 1;
+                note_reject("propose_non_committee_proposer");
+                printf("drop propose non_committee_proposer round=%llu miner=%s\n",
+                       (unsigned long long)batch.round,
+                       Hex32(batch.mints[0].miner_pubkey).c_str());
+                return;
+            }
             if (!engine.Propose(batch))
             {
                 metric_propose_rejects += 1;
@@ -2493,6 +2581,15 @@ int main(int argc, char** argv)
                 printf("drop vote stale round=%llu last=%llu\n",
                        (unsigned long long)vote.round,
                        (unsigned long long)last_committed_round);
+                return;
+            }
+            if (!IsCommitteeValidator(vote.validator_id))
+            {
+                metric_vote_rejects += 1;
+                note_reject("vote_non_committee_validator");
+                printf("drop vote non_committee_validator round=%llu voter=%s\n",
+                       (unsigned long long)vote.round,
+                       Hex32(vote.validator_id).c_str());
                 return;
             }
             if (!RecordRemoteVoteTarget(vote.round, vote.validator_id, vote.batch_hash))
@@ -2614,6 +2711,11 @@ int main(int argc, char** argv)
                 note_reject("timeout_vote_stale");
                 return;
             }
+            if (!IsCommitteeValidator(tv.validator_id))
+            {
+                note_reject("timeout_vote_non_committee_validator");
+                return;
+            }
             std::vector<uint8_t> m;
             if (!BuildTimeoutSignMessage(tv, &m))
             {
@@ -2697,11 +2799,22 @@ int main(int argc, char** argv)
                 printf("drop commit target_unavailable round=%llu\n", (unsigned long long)batch.round);
                 return;
             }
+            const size_t min_votes = DynamicMinVotes();
+            if (!QcHasCommitteeQuorum(qc, min_votes))
+            {
+                metric_commit_rejects += 1;
+                note_reject("commit_qc_non_committee_or_insufficient");
+                printf("drop commit qc_non_committee_or_insufficient round=%llu votes=%zu min_votes=%zu\n",
+                       (unsigned long long)batch.round,
+                       qc.votes.size(),
+                       min_votes);
+                return;
+            }
             if (!VerifyQuorumCertificatePow(qc,
                                             batch.round,
                                             batch.batch_hash,
                                             expected_target,
-                                            DynamicMinVotes(),
+                                            min_votes,
                                             vote_verifier))
             {
                 metric_commit_rejects += 1;
@@ -2813,9 +2926,25 @@ int main(int argc, char** argv)
          Hex32(economics_policy.max_target).c_str());
     const uint64_t proposal_window_ms = ParseEnvU64Clamped("PROPOSAL_WINDOW_MS", 3000ULL, 100ULL, 10000ULL);
     const uint64_t round_timeout_ms = ParseEnvU64Clamped("ROUND_TIMEOUT_MS", 45000ULL, 5000ULL, 180000ULL);
+    const uint64_t adaptive_proposal_window_min_ms =
+        ParseEnvU64Clamped("ADAPTIVE_PROPOSAL_WINDOW_MIN_MS", 500ULL, 100ULL, 30000ULL);
+    const uint64_t adaptive_proposal_window_max_ms =
+        ParseEnvU64Clamped("ADAPTIVE_PROPOSAL_WINDOW_MAX_MS", 10000ULL, 100ULL, 60000ULL);
+    const uint64_t adaptive_round_timeout_min_ms =
+        ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MIN_MS", 5000ULL, 1000ULL, 300000ULL);
+    const uint64_t adaptive_round_timeout_max_ms =
+        ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MAX_MS", 180000ULL, 5000ULL, 600000ULL);
+    adaptive_proposal_window_ms = proposal_window_ms;
+    adaptive_round_timeout_ms = round_timeout_ms;
     Logf(LOG_NORMAL, "[BOOT] autopropose enabled=%d interval_sec=%d\n", cfg.autopropose, cfg.autopropose_interval_sec);
     Logf(LOG_NORMAL, "[BOOT] proposal_window_ms=%llu\n", (unsigned long long)proposal_window_ms);
     Logf(LOG_NORMAL, "[BOOT] round_timeout_ms=%llu\n", (unsigned long long)round_timeout_ms);
+    Logf(LOG_NORMAL,
+         "[BOOT] adaptive_timing proposal_window_min_ms=%llu proposal_window_max_ms=%llu round_timeout_min_ms=%llu round_timeout_max_ms=%llu\n",
+         (unsigned long long)adaptive_proposal_window_min_ms,
+         (unsigned long long)adaptive_proposal_window_max_ms,
+         (unsigned long long)adaptive_round_timeout_min_ms,
+         (unsigned long long)adaptive_round_timeout_max_ms);
     Logf(LOG_NORMAL, "[BOOT] sync_policy=sync_first\n");
     Logf(LOG_NORMAL, "[BOOT] log_level=%s\n", cfg.log_level.c_str());
     Logf(LOG_NORMAL, "[BOOT] commit_recovery last_round=%llu\n", (unsigned long long)last_committed_round);
@@ -2836,7 +2965,7 @@ int main(int argc, char** argv)
         if (it_key == round_best_batch_key.end() || it_seen == round_first_seen_ms.end())
             return;
         const uint64_t now_ms = NowMonotonicMs();
-        if (now_ms < it_seen->second || (now_ms - it_seen->second) < proposal_window_ms)
+        if (now_ms < it_seen->second || (now_ms - it_seen->second) < adaptive_proposal_window_ms)
             return;
         const uint64_t proposal_elapsed_ms = now_ms - it_seen->second;
         size_t candidate_evidence = 0;
@@ -2855,9 +2984,9 @@ int main(int argc, char** argv)
         const bool saw_competing_vote_evidence = vote_target_evidence > 1;
         const bool have_peer_context = !peer_last_round.empty();
         const bool conflict_evidence = saw_competing_candidate || saw_competing_vote_evidence;
-        uint64_t solo_candidate_wait_ms = proposal_window_ms * 4ULL;
-        if (solo_candidate_wait_ms < proposal_window_ms)
-            solo_candidate_wait_ms = proposal_window_ms;
+        uint64_t solo_candidate_wait_ms = adaptive_proposal_window_ms * 4ULL;
+        if (solo_candidate_wait_ms < adaptive_proposal_window_ms)
+            solo_candidate_wait_ms = adaptive_proposal_window_ms;
         if (solo_candidate_wait_ms > 30000ULL)
             solo_candidate_wait_ms = 30000ULL;
         if (have_peer_context && !conflict_evidence && proposal_elapsed_ms < solo_candidate_wait_ms)
@@ -3067,6 +3196,23 @@ int main(int argc, char** argv)
         const uint64_t lag_now = (synced_last_round > last_committed_round) ? (synced_last_round - last_committed_round) : 0;
         const time_t now = time(NULL);
         const int no_progress_sec = (int)(now - last_progress_time);
+        if (rtt_sample_count >= 3)
+        {
+            const uint64_t rtt_ms = (uint64_t)rtt_ewma_ms;
+            uint64_t next_proposal_window_ms = (rtt_ms * 4ULL) + 300ULL;
+            if (next_proposal_window_ms < adaptive_proposal_window_min_ms)
+                next_proposal_window_ms = adaptive_proposal_window_min_ms;
+            if (next_proposal_window_ms > adaptive_proposal_window_max_ms)
+                next_proposal_window_ms = adaptive_proposal_window_max_ms;
+            adaptive_proposal_window_ms = next_proposal_window_ms;
+
+            uint64_t next_round_timeout_ms = (rtt_ms * 12ULL) + (adaptive_proposal_window_ms * 2ULL);
+            if (next_round_timeout_ms < adaptive_round_timeout_min_ms)
+                next_round_timeout_ms = adaptive_round_timeout_min_ms;
+            if (next_round_timeout_ms > adaptive_round_timeout_max_ms)
+                next_round_timeout_ms = adaptive_round_timeout_max_ms;
+            adaptive_round_timeout_ms = next_round_timeout_ms;
+        }
         int target_interval_sec = base_interval_sec;
         if (peer_last_round.size() > 8)
             target_interval_sec += base_interval_sec / 2;
@@ -3089,13 +3235,16 @@ int main(int argc, char** argv)
         if (target_interval_sec != dynamic_autopropose_interval_sec)
         {
             dynamic_autopropose_interval_sec = target_interval_sec;
-            Logf(LOG_NORMAL, "[CTRL] round_interval now=%d base=%d peers=%zu lag=%llu no_progress_sec=%d last_progress_round=%llu\n",
+            Logf(LOG_NORMAL, "[CTRL] round_interval now=%d base=%d peers=%zu lag=%llu no_progress_sec=%d last_progress_round=%llu rtt_ewma_ms=%llu proposal_window_ms=%llu round_timeout_ms=%llu\n",
                    dynamic_autopropose_interval_sec,
                    base_interval_sec,
                    peer_last_round.size(),
                    (unsigned long long)lag_now,
                    no_progress_sec,
-                   (unsigned long long)last_progress_round);
+                   (unsigned long long)last_progress_round,
+                   (unsigned long long)rtt_ewma_ms,
+                   (unsigned long long)adaptive_proposal_window_ms,
+                   (unsigned long long)adaptive_round_timeout_ms);
         }
 
         size_t target_max_spends = economics_policy.max_spends_per_round;
@@ -3157,7 +3306,7 @@ int main(int argc, char** argv)
         const bool autopropose_sync_gate_ok = is_synced_or_standalone && !sync_first;
         const uint64_t target_round = last_committed_round + 1;
         if (cfg.autopropose != 0 && autopropose_sync_gate_ok && have_peers &&
-            (uint64_t)no_progress_sec * 1000ULL >= round_timeout_ms &&
+            (uint64_t)no_progress_sec * 1000ULL >= adaptive_round_timeout_ms &&
             !timeout_vote_sent_rounds.count(target_round))
         {
             TimeoutVote tv;
@@ -3198,23 +3347,18 @@ int main(int argc, char** argv)
                 if (out_winner)
                     *out_winner = signer_id;
                 if (out_n)
-                    *out_n = 1 + peer_node_id_by_fd.size();
+                    *out_n = committee_validators.size();
                 return true;
             }
-            std::set<std::string> uniq;
-            uniq.insert(Bytes32Key(signer_id));
-            for (std::map<int, Bytes32>::const_iterator it = peer_node_id_by_fd.begin(); it != peer_node_id_by_fd.end(); ++it)
-                uniq.insert(Bytes32Key(it->second));
             if (out_n)
-                *out_n = uniq.size();
+                *out_n = committee_validators.size();
             Bytes32 best_score;
             memset(best_score.v, 0xff, 32);
             Bytes32 best_id = signer_id;
             bool have = false;
-            for (std::set<std::string>::const_iterator it = uniq.begin(); it != uniq.end(); ++it)
+            for (size_t i = 0; i < committee_validators.size(); ++i)
             {
-                Bytes32 id;
-                memcpy(id.v, it->data(), 32);
+                const Bytes32& id = committee_validators[i];
                 std::vector<uint8_t> msg;
                 const char* tag = "DRPOW:leader:v1";
                 while (*tag)
