@@ -292,7 +292,6 @@ bool ConsensusRoundEngine::ValidateAndVote(const RoundBatch& batch, Vote* out_vo
 
 bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertificate& qc)
 {
-    (void)qc;
     if (!state_store_)
         return Fail(REJECT_NULL_STATE_STORE, "null state store");
     if (!ValidateBatchStateless(batch))
@@ -316,6 +315,19 @@ bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertifica
         return Fail(REJECT_POW_AUTH_MISSING, "pow auth missing");
     if (!HasPowAuthorization(batch, state_store_, proof_verifier_))
         return Fail(REJECT_POW_TARGET_INVALID, "pow target not met");
+    if (qc.round != batch.round || memcmp(qc.batch_hash.v, batch.batch_hash.v, 32) != 0)
+        return Fail(REJECT_QC_ROUND_MISMATCH, "qc round/hash mismatch");
+    if (!vote_verifier_)
+        return Fail(REJECT_QC_INVALID, "qc verifier missing");
+    if (!VerifyQuorumCertificatePow(qc,
+                                    batch.round,
+                                    batch.batch_hash,
+                                    expected_target,
+                                    (size_t)DrpowParams::kMinQcVotes,
+                                    *vote_verifier_))
+    {
+        return Fail(REJECT_QC_SUPERMAJORITY_MISSING, "qc invalid or insufficient");
+    }
 
     if (!state_store_->Begin())
         return Fail(REJECT_STORE_BEGIN_FAILED, "store begin failed");
