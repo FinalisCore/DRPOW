@@ -2610,6 +2610,7 @@ int main(int argc, char** argv)
                        Hex32(batch.batch_hash).c_str());
                 return;
             }
+            const uint64_t mint0_precheck = batch.mints.empty() ? 0 : batch.mints[0].output.value;
             if (!engine.Commit(batch, qc))
             {
                 metric_commit_rejects += 1;
@@ -2632,13 +2633,14 @@ int main(int argc, char** argv)
             const uint64_t minted = SumBatchMintValue(batch);
             const uint64_t fees = SumBatchFees(batch);
             const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
-            const uint64_t expected_mint_post = ExpectedMintBudgetForRound(store, batch.round, economics_policy);
-            if (minted != expected_mint_post)
+            if (minted != minted_precheck || (!batch.mints.empty() && batch.mints[0].output.value != mint0_precheck))
             {
-                printf("fatal commit_post_mint_mismatch round=%llu minted=%llu expected=%llu mints=%zu batch=%s\n",
+                printf("fatal commit_post_batch_mutation round=%llu minted_now=%llu minted_pre=%llu mint0_now=%llu mint0_pre=%llu mints=%zu batch=%s\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)minted,
-                       (unsigned long long)expected_mint_post,
+                       (unsigned long long)minted_precheck,
+                       (unsigned long long)(batch.mints.empty() ? 0 : batch.mints[0].output.value),
+                       (unsigned long long)mint0_precheck,
                        batch.mints.size(),
                        Hex32(batch.batch_hash).c_str());
                 fflush(stdout);
@@ -2808,6 +2810,7 @@ int main(int argc, char** argv)
                      Hex32(batch.batch_hash).c_str());
                 return;
             }
+            const uint64_t mint0_precheck = batch.mints.empty() ? 0 : batch.mints[0].output.value;
             if (engine.Commit(batch, local_qc))
             {
                 metric_commit_accepts += 1;
@@ -2826,14 +2829,15 @@ int main(int argc, char** argv)
                 const uint64_t minted = SumBatchMintValue(batch);
                 const uint64_t fees = SumBatchFees(batch);
                 const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
-                const uint64_t expected_mint_post = ExpectedMintBudgetForRound(store, batch.round, economics_policy);
-                if (minted != expected_mint_post)
+                if (minted != minted_precheck || (!batch.mints.empty() && batch.mints[0].output.value != mint0_precheck))
                 {
                     Logf(LOG_NORMAL,
-                         "fatal commit_post_mint_mismatch round=%llu minted=%llu expected=%llu mints=%zu batch=%s\n",
+                         "fatal commit_post_batch_mutation round=%llu minted_now=%llu minted_pre=%llu mint0_now=%llu mint0_pre=%llu mints=%zu batch=%s\n",
                          (unsigned long long)batch.round,
                          (unsigned long long)minted,
-                         (unsigned long long)expected_mint_post,
+                         (unsigned long long)minted_precheck,
+                         (unsigned long long)(batch.mints.empty() ? 0 : batch.mints[0].output.value),
+                         (unsigned long long)mint0_precheck,
                          batch.mints.size(),
                          Hex32(batch.batch_hash).c_str());
                     fflush(stdout);
