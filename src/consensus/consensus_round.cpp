@@ -323,7 +323,7 @@ bool ConsensusRoundEngine::Commit(const RoundBatch& batch, const QuorumCertifica
                                     batch.round,
                                     batch.batch_hash,
                                     expected_target,
-                                    (size_t)DrpowParams::kMinQcVotes,
+                                    DrpowParams::kMinQcWeight,
                                     *vote_verifier_))
     {
         return Fail(REJECT_QC_SUPERMAJORITY_MISSING, "qc invalid or insufficient");

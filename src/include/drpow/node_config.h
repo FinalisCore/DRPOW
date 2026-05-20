@@ -21,6 +21,7 @@ struct NodeConfig {
     std::string signer_privkey_hex;
     std::string genesis_hash_hex;
     std::string log_level;
+    std::string expected_build_id;
 };
 
 bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err);

@@ -39,6 +39,22 @@ LIBOQS_LIB_DIR="${LIBOQS_INSTALL_DIR}/lib"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 1; }; }
 
+resolve_build_id() {
+  if [ -n "${EXPECTED_BUILD_ID:-}" ]; then
+    echo "${EXPECTED_BUILD_ID}"
+    return
+  fi
+  if command -v git >/dev/null 2>&1; then
+    local rev
+    rev="$(git -C "${ROOT_DIR}" rev-parse --short=12 HEAD 2>/dev/null || true)"
+    if [ -n "${rev}" ]; then
+      echo "${rev}"
+      return
+    fi
+  fi
+  echo "unknown"
+}
+
 ensure_default_peers_file() {
   local default_peer="${DEFAULT_BOOTSTRAP_PEER}"
   [ -z "${default_peer}" ] && return
@@ -178,6 +194,7 @@ signer_privkey_hex=${SIGNER_PRIVKEY_HEX}
 genesis_hash_hex=${GENESIS_HASH_HEX}
 log_level=${LOG_LEVEL}
 CFG
+  echo "expected_build_id=$(resolve_build_id)" >> "${CONF_FILE}"
   if [ -n "${BOOTSTRAP_PEERS}" ]; then
     echo "peers=${BOOTSTRAP_PEERS}" >> "${CONF_FILE}"
   fi

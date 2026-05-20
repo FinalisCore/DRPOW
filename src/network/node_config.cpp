@@ -60,6 +60,7 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
     cfg.network_magic = 0x52504f57u;
     cfg.pow_target_prefix_bytes = -1;
     cfg.log_level = "normal";
+    cfg.expected_build_id = "";
 
     std::ifstream in(path.c_str());
     if (!in.good())
@@ -110,6 +111,8 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
             cfg.genesis_hash_hex = v;
         else if (k == "log_level")
             cfg.log_level = v;
+        else if (k == "expected_build_id")
+            cfg.expected_build_id = v;
         else if (k == "validator_pubkeys_hex")
         {
             cfg.validator_pubkeys_hex.clear();
