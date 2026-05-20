@@ -3,7 +3,9 @@ CXXFLAGS ?= -std=c++11 -O2 -Wall -Wextra
 LDFLAGS ?=
 LDLIBS ?= -lcrypto
 USE_LIBOQS ?= auto
+DRPOW_BUILD_ID ?= $(shell git -C $(CURDIR) rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 CXXFLAGS += -I. -Iinclude -Iinclude/drpow -Iprotocol/tx -Icrypto -Iconsensus -Inetwork -Istorage -Iproof -Icli -Inode
+CXXFLAGS += -DDRPOW_BUILD_ID=\"$(DRPOW_BUILD_ID)\"
 BUILD_DIR ?= build
 
 LOCAL_LIBOQS_PC_DIR := $(CURDIR)/liboqs/install/lib/pkgconfig

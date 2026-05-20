@@ -31,6 +31,10 @@
 
 using namespace drpow;
 
+#ifndef DRPOW_BUILD_ID
+#define DRPOW_BUILD_ID "unknown"
+#endif
+
 enum {
     LOG_QUIET = 0,
     LOG_NORMAL = 1,
@@ -804,6 +808,16 @@ int main(int argc, char** argv)
     if (!LoadNodeConfig(argv[1], &cfg, &err))
     {
         printf("config_error: %s\n", err.c_str());
+        return 2;
+    }
+    const std::string local_build_id = DRPOW_BUILD_ID;
+    if (!cfg.expected_build_id.empty() && cfg.expected_build_id != local_build_id)
+    {
+        printf("startup_build_id_mismatch expected=%s actual=%s config=%s\n",
+               cfg.expected_build_id.c_str(),
+               local_build_id.c_str(),
+               argv[1]);
+        printf("startup_hint: deploy identical binaries/config expected_build_id on all nodes\n");
         return 2;
     }
     if (!WireSetMagic(cfg.network_magic))
@@ -2815,6 +2829,7 @@ int main(int argc, char** argv)
            cfg.data_dir.c_str(),
            cfg.peers.size(),
            cfg.duration_sec);
+    Logf(LOG_NORMAL, "[BOOT] build_id=%s\n", local_build_id.c_str());
     Logf(LOG_NORMAL, "[BOOT] params_version=%s\n", DrpowParamsVersionTag());
     Logf(LOG_NORMAL, "[BOOT] params_hash=%s\n", Hex32(params_hash).c_str());
     {
