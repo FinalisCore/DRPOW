@@ -1584,7 +1584,22 @@ int main(int argc, char** argv)
         if (!out_score)
             return false;
         Bytes32 parent_root;
-        if (store.ReadStateRoot(&parent_root) && ComputeProposerPowHashLocal(batch, parent_root, out_score))
+        bool have_parent_root = false;
+        if (batch.round <= 1)
+        {
+            have_parent_root = store.ReadStateRoot(&parent_root);
+        }
+        else
+        {
+            std::vector<RoundCommitRecord> prev;
+            if (store.ExportVerifiedCommitRecordsFromRound(batch.round - 1, 1, &prev) &&
+                prev.size() == 1)
+            {
+                parent_root = prev[0].state_root;
+                have_parent_root = true;
+            }
+        }
+        if (have_parent_root && ComputeProposerPowHashLocal(batch, parent_root, out_score))
             return true;
         *out_score = batch.batch_hash;
         return true;
