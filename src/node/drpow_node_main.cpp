@@ -1215,7 +1215,7 @@ int main(int argc, char** argv)
         return key;
     };
     auto DynamicMinVotes = [&]() -> size_t {
-        return 1;
+        return (size_t)DrpowParams::kMinQcVotes;
     };
     auto BuildTimeoutSignMessage = [&](const TimeoutVote& tv, std::vector<uint8_t>* out) -> bool {
         if (!out)
@@ -2846,7 +2846,7 @@ int main(int argc, char** argv)
     const uint64_t adaptive_proposal_window_max_ms =
         ParseEnvU64Clamped("ADAPTIVE_PROPOSAL_WINDOW_MAX_MS", 10000ULL, 100ULL, 60000ULL);
     const uint64_t adaptive_round_timeout_min_ms =
-        ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MIN_MS", 5000ULL, 1000ULL, 300000ULL);
+        ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MIN_MS", 30000ULL, 1000ULL, 300000ULL);
     const uint64_t adaptive_round_timeout_max_ms =
         ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MAX_MS", 180000ULL, 5000ULL, 600000ULL);
     adaptive_proposal_window_ms = proposal_window_ms;
@@ -3222,7 +3222,9 @@ int main(int argc, char** argv)
         const uint64_t target_round = last_committed_round + 1;
         if (cfg.autopropose != 0 && autopropose_sync_gate_ok && have_peers &&
             (uint64_t)no_progress_sec * 1000ULL >= adaptive_round_timeout_ms &&
-            !timeout_vote_sent_rounds.count(target_round))
+            !timeout_vote_sent_rounds.count(target_round) &&
+            round_best_batch_key.count(target_round) &&
+            !local_vote_by_round.count(target_round))
         {
             TimeoutVote tv;
             tv.round = target_round;
