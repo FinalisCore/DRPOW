@@ -2624,6 +2624,30 @@ int main(int argc, char** argv)
                     log_qc_gate_insufficient(itb->second.round, k, qc.votes.size(), min_votes);
                     return;
                 }
+                Bytes32 expected_target;
+                if (!ComputeExpectedTargetForRoundNode(store, itb->second.round, economics_policy, &expected_target))
+                {
+                    metric_commit_rejects += 1;
+                    note_reject("commit_target_unavailable");
+                    printf("drop commit target_unavailable round=%llu\n",
+                           (unsigned long long)itb->second.round);
+                    return;
+                }
+                if (!VerifyQuorumCertificatePow(qc,
+                                                itb->second.round,
+                                                itb->second.batch_hash,
+                                                expected_target,
+                                                min_votes,
+                                                vote_verifier))
+                {
+                    metric_commit_rejects += 1;
+                    note_reject("commit_qc_invalid");
+                    printf("drop commit qc_invalid round=%llu votes=%zu min_votes=%zu\n",
+                           (unsigned long long)itb->second.round,
+                           qc.votes.size(),
+                           min_votes);
+                    return;
+                }
             }
             qc_gate_last_votes.erase(k);
             observe_qc(qc);
@@ -3009,7 +3033,38 @@ int main(int argc, char** argv)
         bool local_supermajority = (local_qc.votes.size() >= local_min_votes);
         if (!local_supermajority)
             log_qc_gate_insufficient(batch.round, k, local_qc.votes.size(), local_min_votes);
-        if (local_supermajority && batch.round > last_committed_round)
+        bool local_qc_valid = false;
+        if (local_supermajority)
+        {
+            Bytes32 expected_target;
+            if (!ComputeExpectedTargetForRoundNode(store, batch.round, economics_policy, &expected_target))
+            {
+                metric_commit_rejects += 1;
+                note_reject("local_commit_target_unavailable");
+                Logf(LOG_NORMAL,
+                     "[COMMIT][REJECT] round=%llu reason=target_unavailable\n",
+                     (unsigned long long)batch.round);
+                return;
+            }
+            local_qc_valid = VerifyQuorumCertificatePow(local_qc,
+                                                        batch.round,
+                                                        batch.batch_hash,
+                                                        expected_target,
+                                                        local_min_votes,
+                                                        vote_verifier);
+            if (!local_qc_valid)
+            {
+                metric_commit_rejects += 1;
+                note_reject("local_commit_qc_invalid");
+                Logf(LOG_NORMAL,
+                     "[COMMIT][REJECT] round=%llu reason=qc_invalid votes=%zu min_votes=%zu\n",
+                     (unsigned long long)batch.round,
+                     local_qc.votes.size(),
+                     local_min_votes);
+                return;
+            }
+        }
+        if (local_supermajority && local_qc_valid && batch.round > last_committed_round)
         {
             qc_gate_last_votes.erase(k);
             const uint64_t minted_precheck = SumBatchMintValue(batch);
