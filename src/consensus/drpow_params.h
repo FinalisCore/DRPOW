@@ -12,7 +12,8 @@ struct Bytes32;
 // Consensus-locked DRPOW parameters.
 // Any value change is a consensus change and requires coordinated upgrade.
 struct DrpowParams {
-    static const uint64_t kMinQcVotes = 2;
+    // Minimum cumulative PoW vote-ticket weight required for QC validity.
+    static const uint64_t kMinQcWeight = 2;
     static const uint64_t kTargetAdjustUpPpmLimit = 2000000;
     static const uint64_t kTargetAdjustDownPpmLimit = 250000;
 };

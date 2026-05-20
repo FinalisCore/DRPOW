@@ -51,10 +51,11 @@ DRPOW_PROOF_BUDGET_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_proof
 DRPOW_PROOF_MIGRATION_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_proof_migration_smoketest.cpp
 DRPOW_POW_ELIGIBILITY_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_pow_eligibility_smoketest.cpp
 DRPOW_DIFFICULTY_TRANSITION_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_difficulty_transition_smoketest.cpp
+DRPOW_QC_THRESHOLD_SMOKETEST_SRCS = $(DRPOW_COMMON_SRCS) tests/smoke/drpow_qc_threshold_smoketest.cpp
 
 .PHONY: all clean test
 
-all: drpow_smoketest drpow_replay_smoketest drpow_proof_policy_smoketest drpow_proof_budget_smoketest drpow_proof_migration_smoketest drpow_pow_eligibility_smoketest drpow_difficulty_transition_smoketest drpow_node drpow_cli
+all: drpow_smoketest drpow_replay_smoketest drpow_proof_policy_smoketest drpow_proof_budget_smoketest drpow_proof_migration_smoketest drpow_pow_eligibility_smoketest drpow_difficulty_transition_smoketest drpow_qc_threshold_smoketest drpow_node drpow_cli
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -80,6 +81,9 @@ $(BUILD_DIR)/drpow_pow_eligibility_smoketest: $(DRPOW_POW_ELIGIBILITY_SMOKETEST_
 $(BUILD_DIR)/drpow_difficulty_transition_smoketest: $(DRPOW_DIFFICULTY_TRANSITION_SMOKETEST_SRCS) | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $(DRPOW_DIFFICULTY_TRANSITION_SMOKETEST_SRCS) $(LDFLAGS) $(LDLIBS)
 
+$(BUILD_DIR)/drpow_qc_threshold_smoketest: $(DRPOW_QC_THRESHOLD_SMOKETEST_SRCS) | $(BUILD_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ $(DRPOW_QC_THRESHOLD_SMOKETEST_SRCS) $(LDFLAGS) $(LDLIBS)
+
 $(BUILD_DIR)/drpow_node: $(DRPOW_COMMON_SRCS) mempool/mempool.cpp node/drpow_node_main.cpp | $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) -o $@ $(DRPOW_COMMON_SRCS) mempool/mempool.cpp node/drpow_node_main.cpp $(LDFLAGS) $(LDLIBS)
 
@@ -93,6 +97,7 @@ drpow_proof_budget_smoketest: $(BUILD_DIR)/drpow_proof_budget_smoketest
 drpow_proof_migration_smoketest: $(BUILD_DIR)/drpow_proof_migration_smoketest
 drpow_pow_eligibility_smoketest: $(BUILD_DIR)/drpow_pow_eligibility_smoketest
 drpow_difficulty_transition_smoketest: $(BUILD_DIR)/drpow_difficulty_transition_smoketest
+drpow_qc_threshold_smoketest: $(BUILD_DIR)/drpow_qc_threshold_smoketest
 drpow_node: $(BUILD_DIR)/drpow_node
 drpow_cli: $(BUILD_DIR)/drpow_cli
 
@@ -104,6 +109,7 @@ test: all
 	./$(BUILD_DIR)/drpow_proof_migration_smoketest
 	./$(BUILD_DIR)/drpow_pow_eligibility_smoketest
 	./$(BUILD_DIR)/drpow_difficulty_transition_smoketest
+	./$(BUILD_DIR)/drpow_qc_threshold_smoketest
 
 clean:
 	rm -rf $(BUILD_DIR)

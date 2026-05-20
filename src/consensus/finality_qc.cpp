@@ -112,21 +112,36 @@ bool VerifyVotePowAgainstTarget(const Vote& vote, const Bytes32& target_round, s
     return true;
 }
 
+uint64_t VotePowWeight(const Vote& vote)
+{
+    if (!vote.pow_proof_present)
+        return 0;
+    // Deterministic inverse-hash weight over the high 64 bits of pow_hash:
+    // w = floor((2^64 - 1) / (hi64(pow_hash)+1)).
+    // Lower hash -> higher weight; bounded and cheap for consensus paths.
+    uint64_t hi = 0;
+    for (int i = 0; i < 8; ++i)
+        hi = (hi << 8) | (uint64_t)vote.pow_hash.v[i];
+    const uint64_t denom = hi + 1ULL;
+    return UINT64_MAX / denom;
+}
+
 bool VerifyQuorumCertificatePow(const QuorumCertificate& qc,
                                 uint64_t expected_round,
                                 const Bytes32& expected_batch_hash,
                                 const Bytes32& target_round,
-                                size_t min_votes,
+                                uint64_t min_weight,
                                 const VoteVerifier& verifier)
 {
     if (qc.round != expected_round)
         return false;
     if (memcmp(qc.batch_hash.v, expected_batch_hash.v, 32) != 0)
         return false;
-    if (qc.votes.size() < min_votes)
+    if (qc.votes.empty())
         return false;
     std::set<std::string> seen;
     size_t valid_votes = 0;
+    uint64_t weight_sum = 0;
     for (size_t i = 0; i < qc.votes.size(); ++i)
     {
         const Vote& v = qc.votes[i];
@@ -142,9 +157,14 @@ bool VerifyQuorumCertificatePow(const QuorumCertificate& qc,
             return false;
         if (!VerifyVotePowAgainstTarget(v, target_round, NULL))
             return false;
+        const uint64_t w = VotePowWeight(v);
+        if (UINT64_MAX - weight_sum < w)
+            weight_sum = UINT64_MAX;
+        else
+            weight_sum += w;
         valid_votes += 1;
     }
-    return valid_votes >= min_votes;
+    return valid_votes > 0 && weight_sum >= min_weight;
 }
 
 

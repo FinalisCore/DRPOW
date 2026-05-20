@@ -165,6 +165,21 @@ static bool TruncateFile(const std::string& path)
     return out.good();
 }
 
+static bool CopyFilePath(const std::string& src, const std::string& dst)
+{
+    std::ifstream in(src.c_str(), std::ios::binary);
+    if (!in.good())
+    {
+        std::ofstream out_empty(dst.c_str(), std::ios::binary | std::ios::trunc);
+        return out_empty.good();
+    }
+    std::ofstream out(dst.c_str(), std::ios::binary | std::ios::trunc);
+    if (!out.good())
+        return false;
+    out << in.rdbuf();
+    return in.good() || in.eof();
+}
+
 static bool ResetCorruptCommitLogForProgress(const std::string& commit_log_file)
 {
     const uint64_t ts = (uint64_t)time(NULL);
@@ -699,6 +714,78 @@ bool RegistryStateStore::ExportVerifiedCommitRecordsFromRound(uint64_t from_roun
         if (out->size() >= max_records)
             return true;
     }
+}
+
+bool RegistryStateStore::SaveSnapshot(const std::string& snapshot_dir) const
+{
+    if (snapshot_dir.empty())
+        return false;
+    const std::string reg = snapshot_dir + "/registry.bin";
+    const std::string led = snapshot_dir + "/registry.bin.ledger";
+    const std::string cmt = snapshot_dir + "/commit.log";
+    const std::string evd = snapshot_dir + "/evidence.log";
+    if (!CopyFilePath(registry_file_, reg))
+        return false;
+    if (!CopyFilePath(ledger_file_, led))
+        return false;
+    if (!CopyFilePath(commit_log_file_, cmt))
+        return false;
+    if (!CopyFilePath(evidence_log_file_, evd))
+        return false;
+    return true;
+}
+
+bool RegistryStateStore::ReloadFromDisk()
+{
+    in_txn_ = false;
+    pending_commits_.clear();
+    staged_.clear();
+    live_.clear();
+    live_totals_.total_supply = 0;
+    live_totals_.total_minted = 0;
+    live_totals_.total_fees_burned = 0;
+    staged_totals_ = live_totals_;
+    genesis_supply_ = 0;
+    commit_log_ok_ = true;
+    verified_last_round_ = 0;
+    commit_log_verify_error_ = COMMITLOG_VERIFY_OK;
+    commit_log_verify_error_message_.clear();
+
+    if (!LoadRegistry())
+    {
+        commit_log_ok_ = false;
+        return false;
+    }
+    if (!LoadLedgerTotals())
+    {
+        commit_log_ok_ = false;
+        return false;
+    }
+    if (!VerifyCommitLog())
+    {
+        commit_log_ok_ = false;
+        return false;
+    }
+    return true;
+}
+
+bool RegistryStateStore::RestoreSnapshot(const std::string& snapshot_dir)
+{
+    if (snapshot_dir.empty())
+        return false;
+    const std::string reg = snapshot_dir + "/registry.bin";
+    const std::string led = snapshot_dir + "/registry.bin.ledger";
+    const std::string cmt = snapshot_dir + "/commit.log";
+    const std::string evd = snapshot_dir + "/evidence.log";
+    if (!CopyFilePath(reg, registry_file_))
+        return false;
+    if (!CopyFilePath(led, ledger_file_))
+        return false;
+    if (!CopyFilePath(cmt, commit_log_file_))
+        return false;
+    if (!CopyFilePath(evd, evidence_log_file_))
+        return false;
+    return ReloadFromDisk();
 }
 
 bool RegistryStateStore::LoadLedgerTotals()

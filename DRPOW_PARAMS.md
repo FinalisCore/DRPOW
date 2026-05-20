@@ -8,7 +8,7 @@ Any change here is a consensus change and requires coordinated network upgrade.
 
 ## 1) QC Threshold
 
-- `kMinQcVotes = 2`
+- `kMinQcWeight = 2`
 
 ## 2) Difficulty Retarget Limits
 

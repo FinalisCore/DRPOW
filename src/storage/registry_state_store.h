@@ -46,6 +46,9 @@ public:
     virtual bool ReadMintBudget(uint64_t* out_budget) const;
     uint64_t LastVerifiedCommitRound() const { return verified_last_round_; }
     virtual bool ExportVerifiedCommitRecordsFromRound(uint64_t from_round, size_t max_records, std::vector<RoundCommitRecord>* out) const;
+    bool SaveSnapshot(const std::string& snapshot_dir) const;
+    bool RestoreSnapshot(const std::string& snapshot_dir);
+    bool ReloadFromDisk();
     CommitLogVerifyError commit_log_verify_error() const { return commit_log_verify_error_; }
     const std::string& commit_log_verify_error_message() const { return commit_log_verify_error_message_; }
 

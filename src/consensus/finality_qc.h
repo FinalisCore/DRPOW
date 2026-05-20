@@ -42,11 +42,12 @@ void BuildVoteSigningMessageV2(const Vote& vote, std::vector<uint8_t>* out);
 bool VerifyVotePowFields(const Vote& vote, std::string* reason);
 bool VotePowHashMeetsTarget(const Bytes32& pow_hash, const Bytes32& pow_target);
 bool VerifyVotePowAgainstTarget(const Vote& vote, const Bytes32& target_round, std::string* reason);
+uint64_t VotePowWeight(const Vote& vote);
 bool VerifyQuorumCertificatePow(const QuorumCertificate& qc,
                                 uint64_t expected_round,
                                 const Bytes32& expected_batch_hash,
                                 const Bytes32& target_round,
-                                size_t min_votes,
+                                uint64_t min_weight,
                                 const VoteVerifier& verifier);
 
 class VoteVerifier {

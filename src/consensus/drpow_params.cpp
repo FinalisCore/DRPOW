@@ -13,7 +13,7 @@ namespace drpow {
 
 const char* DrpowParamsVersionTag()
 {
-    return "drpow_params_v2";
+    return "drpow_params_v3";
 }
 
 bool ComputeDrpowParamsHash(Bytes32* out_hash)
@@ -24,9 +24,9 @@ bool ComputeDrpowParamsHash(Bytes32* out_hash)
     // Canonical serialization: fixed field order, decimal integer formatting.
     const int n = snprintf(buf,
                            sizeof(buf),
-                           "%s|min_qc_votes=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
+                           "%s|min_qc_weight=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
                            DrpowParamsVersionTag(),
-                           (unsigned long long)DrpowParams::kMinQcVotes,
+                           (unsigned long long)DrpowParams::kMinQcWeight,
                            (unsigned long long)DrpowParams::kTargetAdjustUpPpmLimit,
                            (unsigned long long)DrpowParams::kTargetAdjustDownPpmLimit);
     if (n <= 0 || (size_t)n >= sizeof(buf))
@@ -85,12 +85,12 @@ bool ComputeDrpowParamsHashFromSpecFile(const char* spec_file_path, Bytes32* out
     while (std::getline(in, line))
     {
         uint64_t v = 0;
-        if (ExtractUintFromLine(line, "kMinQcVotes", &v)) kv["kMinQcVotes"] = v;
+        if (ExtractUintFromLine(line, "kMinQcWeight", &v)) kv["kMinQcWeight"] = v;
         if (ExtractUintFromLine(line, "kTargetAdjustUpPpmLimit", &v)) kv["kTargetAdjustUpPpmLimit"] = v;
         if (ExtractUintFromLine(line, "kTargetAdjustDownPpmLimit", &v)) kv["kTargetAdjustDownPpmLimit"] = v;
     }
     static const char* required[] = {
-        "kMinQcVotes",
+        "kMinQcWeight",
         "kTargetAdjustUpPpmLimit",
         "kTargetAdjustDownPpmLimit"
     };
@@ -106,9 +106,9 @@ bool ComputeDrpowParamsHashFromSpecFile(const char* spec_file_path, Bytes32* out
     char buf[1024];
     const int n = snprintf(buf,
                            sizeof(buf),
-                           "%s|min_qc_votes=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
+                           "%s|min_qc_weight=%llu|target_adjust_up_ppm_limit=%llu|target_adjust_down_ppm_limit=%llu",
                            DrpowParamsVersionTag(),
-                           (unsigned long long)kv["kMinQcVotes"],
+                           (unsigned long long)kv["kMinQcWeight"],
                            (unsigned long long)kv["kTargetAdjustUpPpmLimit"],
                            (unsigned long long)kv["kTargetAdjustDownPpmLimit"]);
     if (n <= 0 || (size_t)n >= sizeof(buf))
