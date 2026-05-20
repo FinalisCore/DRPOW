@@ -1201,6 +1201,11 @@ int main(int argc, char** argv)
         key.append((const char*)voter.v, 32);
         return key;
     };
+    auto DynamicMinVotes = [&]() -> size_t {
+        const size_t n = 1 + peer_last_round.size();
+        const size_t q = ((2 * n) / 3) + 1;
+        return q > 0 ? q : 1;
+    };
     auto EnsureLocalVoteForRound = [&](uint64_t round, const Bytes32& batch_hash) -> bool {
         std::map<uint64_t, Bytes32>::const_iterator it = local_vote_by_round.find(round);
         if (it == local_vote_by_round.end())
@@ -1296,7 +1301,7 @@ int main(int argc, char** argv)
                                             batch.round,
                                             batch.batch_hash,
                                             expected_target,
-                                            (size_t)DrpowParams::kMinQcVotes,
+                                            DynamicMinVotes(),
                                             vote_verifier))
             {
                 printf("catchup_break_qc_invalid round=%llu votes=%zu\n",
@@ -2554,7 +2559,7 @@ int main(int argc, char** argv)
             qc.batch_hash = itb->second.batch_hash;
             qc.votes = known_votes[k];
             {
-                const size_t min_votes = (size_t)DrpowParams::kMinQcVotes;
+                const size_t min_votes = DynamicMinVotes();
                 if (qc.votes.size() < min_votes)
                 {
                     log_qc_gate_insufficient(itb->second.round, k, qc.votes.size(), min_votes);
@@ -2635,7 +2640,7 @@ int main(int argc, char** argv)
                                             batch.round,
                                             batch.batch_hash,
                                             expected_target,
-                                            (size_t)DrpowParams::kMinQcVotes,
+                                            DynamicMinVotes(),
                                             vote_verifier))
             {
                 metric_commit_rejects += 1;
@@ -2878,9 +2883,10 @@ int main(int argc, char** argv)
         local_qc.round = batch.round;
         local_qc.batch_hash = batch.batch_hash;
         local_qc.votes = known_votes[k];
-        bool local_supermajority = (local_qc.votes.size() >= (size_t)DrpowParams::kMinQcVotes);
+        const size_t local_min_votes = DynamicMinVotes();
+        bool local_supermajority = (local_qc.votes.size() >= local_min_votes);
         if (!local_supermajority)
-            log_qc_gate_insufficient(batch.round, k, local_qc.votes.size(), (size_t)DrpowParams::kMinQcVotes);
+            log_qc_gate_insufficient(batch.round, k, local_qc.votes.size(), local_min_votes);
         if (local_supermajority && batch.round > last_committed_round)
         {
             qc_gate_last_votes.erase(k);
@@ -2989,6 +2995,7 @@ int main(int argc, char** argv)
     size_t dynamic_max_spends_per_round = economics_policy.max_spends_per_round;
     const uint64_t kPowBaseBudgetMs = 6000ULL;
     uint64_t dynamic_pow_time_budget_ms = kPowBaseBudgetMs;
+    uint64_t last_leader_log_round = 0;
     bool sync_first_prev = false;
     while (true)
     {
@@ -3086,6 +3093,44 @@ int main(int argc, char** argv)
         }
         const bool autopropose_sync_gate_ok = is_synced_or_standalone && !sync_first;
         const uint64_t target_round = last_committed_round + 1;
+        auto IsLocalRoundLeader = [&](uint64_t round, Bytes32* out_winner, size_t* out_n) -> bool {
+            std::set<std::string> uniq;
+            uniq.insert(Bytes32Key(signer_id));
+            for (std::map<int, Bytes32>::const_iterator it = peer_node_id_by_fd.begin(); it != peer_node_id_by_fd.end(); ++it)
+                uniq.insert(Bytes32Key(it->second));
+            if (out_n)
+                *out_n = uniq.size();
+            Bytes32 best_score;
+            memset(best_score.v, 0xff, 32);
+            Bytes32 best_id = signer_id;
+            bool have = false;
+            for (std::set<std::string>::const_iterator it = uniq.begin(); it != uniq.end(); ++it)
+            {
+                Bytes32 id;
+                memcpy(id.v, it->data(), 32);
+                std::vector<uint8_t> msg;
+                const char* tag = "DRPOW:leader:v1";
+                while (*tag)
+                    msg.push_back((uint8_t)*tag++);
+                WriteU64LE(&msg, round);
+                msg.insert(msg.end(), id.v, id.v + 32);
+                Bytes32 score;
+                if (!Sha256(msg, &score))
+                    continue;
+                if (!have || memcmp(score.v, best_score.v, 32) < 0 ||
+                    (memcmp(score.v, best_score.v, 32) == 0 && memcmp(id.v, best_id.v, 32) < 0))
+                {
+                    best_score = score;
+                    best_id = id;
+                    have = true;
+                }
+            }
+            if (!have)
+                return true;
+            if (out_winner)
+                *out_winner = best_id;
+            return memcmp(best_id.v, signer_id.v, 32) == 0;
+        };
         if (cfg.autopropose != 0 &&
             autopropose_sync_gate_ok &&
             (time(NULL) - last_autopropose_tick) >= dynamic_autopropose_interval_sec)
@@ -3094,6 +3139,23 @@ int main(int argc, char** argv)
             bool have_pending = GetPendingRound(target_round, &batch);
             if (!have_pending)
             {
+                Bytes32 leader_id;
+                size_t leader_n = 1;
+                const bool local_leader = IsLocalRoundLeader(target_round, &leader_id, &leader_n);
+                if (last_leader_log_round != target_round)
+                {
+                    last_leader_log_round = target_round;
+                    Logf(LOG_NORMAL, "[LEADER] round=%llu validators=%zu winner=%s local=%d\n",
+                           (unsigned long long)target_round,
+                           leader_n,
+                           Hex32(leader_id).c_str(),
+                           local_leader ? 1 : 0);
+                }
+                if (!local_leader)
+                {
+                    last_autopropose_tick = time(NULL);
+                    continue;
+                }
                 batch.round = target_round;
                 SetRoundMode(target_round, ROUND_MODE_MINING, "autopropose_start");
                 batch.params_hash = params_hash;
