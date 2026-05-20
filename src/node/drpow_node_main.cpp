@@ -1593,6 +1593,15 @@ int main(int argc, char** argv)
         const uint64_t round = batch.round;
         if (round <= last_committed_round)
             return;
+        std::map<uint64_t, int>::const_iterator it_mode = round_mode_state.find(round);
+        if (it_mode != round_mode_state.end() && it_mode->second == ROUND_MODE_VOTED_LOCKED)
+        {
+            Logf(LOG_NORMAL,
+                 "candidate_ignored round=%llu reason=voted_locked batch=%s\n",
+                 (unsigned long long)round,
+                 Hex32(batch.batch_hash).c_str());
+            return;
+        }
         SetRoundMode(round, ROUND_MODE_VERIFY_VOTE, "proposal_seen");
         const std::string batch_key = Bytes32Key(batch.batch_hash);
         if (!known_batches.count(batch_key))
