@@ -963,6 +963,7 @@ int main(int argc, char** argv)
     std::map<uint64_t, Bytes32> round_best_batch_score;
     std::map<uint64_t, uint64_t> round_first_seen_ms;
     std::map<uint64_t, std::set<std::string> > round_candidate_keys;
+    std::map<uint64_t, std::set<std::string> > round_vote_batch_keys;
     std::map<uint64_t, int> round_mode_state;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     const uint64_t startup_registry_bytes = FileSizeBytes(registry);
@@ -1171,6 +1172,7 @@ int main(int argc, char** argv)
             round_best_batch_score.erase(r);
             round_first_seen_ms.erase(r);
             round_candidate_keys.erase(r);
+            round_vote_batch_keys.erase(r);
             local_vote_by_round.erase(r);
             round_mode_state.erase(r);
         }
@@ -2524,6 +2526,7 @@ int main(int argc, char** argv)
                      Hex32(expected_vote_target).c_str());
             }
             const std::string k = Bytes32Key(vote.batch_hash);
+            round_vote_batch_keys[vote.round].insert(k);
             std::map<std::string, RoundBatch>::const_iterator itb = known_batches.find(k);
             if (itb == known_batches.end())
             {
@@ -2764,12 +2767,30 @@ int main(int argc, char** argv)
         std::map<uint64_t, uint64_t>::const_iterator it_seen = round_first_seen_ms.find(round);
         if (it_key == round_best_batch_key.end() || it_seen == round_first_seen_ms.end())
             return;
-        std::map<uint64_t, std::set<std::string> >::const_iterator it_candidates = round_candidate_keys.find(round);
-        if (it_candidates == round_candidate_keys.end() || it_candidates->second.size() < 2)
-            return;
         const uint64_t now_ms = NowMonotonicMs();
         if (now_ms < it_seen->second || (now_ms - it_seen->second) < proposal_window_ms)
             return;
+        size_t candidate_evidence = 0;
+        {
+            std::map<uint64_t, std::set<std::string> >::const_iterator it_candidates = round_candidate_keys.find(round);
+            if (it_candidates != round_candidate_keys.end())
+                candidate_evidence = it_candidates->second.size();
+        }
+        size_t vote_target_evidence = 0;
+        {
+            std::map<uint64_t, std::set<std::string> >::const_iterator it_vote_targets = round_vote_batch_keys.find(round);
+            if (it_vote_targets != round_vote_batch_keys.end())
+                vote_target_evidence = it_vote_targets->second.size();
+        }
+        const bool saw_competing_candidate = candidate_evidence > 1;
+        const bool saw_competing_vote_evidence = vote_target_evidence > 1;
+        Logf(LOG_DEBUG,
+             "[VOTE_GATE] round=%llu candidates=%zu vote_targets=%zu competing_candidate=%d competing_vote=%d\n",
+             (unsigned long long)round,
+             candidate_evidence,
+             vote_target_evidence,
+             saw_competing_candidate ? 1 : 0,
+             saw_competing_vote_evidence ? 1 : 0);
         std::map<std::string, RoundBatch>::const_iterator it_batch = known_batches.find(it_key->second);
         if (it_batch == known_batches.end())
             return;
@@ -2827,6 +2848,7 @@ int main(int argc, char** argv)
         }
         metric_vote_accepts += 1;
         const std::string k = Bytes32Key(vote.batch_hash);
+        round_vote_batch_keys[vote.round].insert(k);
         const std::string voter_key((const char*)vote.validator_id.v, 32);
         if (!known_vote_ids[k].count(voter_key))
         {
