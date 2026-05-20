@@ -931,31 +931,7 @@ int main(int argc, char** argv)
     }
     printf("signer_id=%s\n", Hex32(signer_id).c_str());
 
-    std::set<std::string> committee_keyset;
-    std::vector<Bytes32> committee_validators;
-    for (size_t i = 0; i < cfg.validator_pubkeys_hex.size(); ++i)
-    {
-        Bytes32 vid;
-        if (!HexTo32(cfg.validator_pubkeys_hex[i], vid.v))
-        {
-            printf("validator_pubkey_invalid index=%zu value=%s\n", i, cfg.validator_pubkeys_hex[i].c_str());
-            return 6;
-        }
-        const std::string k = Bytes32Key(vid);
-        if (committee_keyset.insert(k).second)
-            committee_validators.push_back(vid);
-    }
-    if (committee_validators.empty())
-    {
-        committee_keyset.insert(Bytes32Key(signer_id));
-        committee_validators.push_back(signer_id);
-    }
-    if (!committee_keyset.count(Bytes32Key(signer_id)))
-    {
-        printf("validator_set_missing_local_signer signer_id=%s\n", Hex32(signer_id).c_str());
-        return 6;
-    }
-    Logf(LOG_NORMAL, "[BOOT] validator_set_size=%zu\n", committee_validators.size());
+    Logf(LOG_NORMAL, "[BOOT] consensus_mode=pow_open\n");
 
     ProofPolicy proof_policy = DefaultProofPolicy();
     BasicProofVerifier proof_verifier(crypto.get(), &proof_policy);
@@ -1239,27 +1215,7 @@ int main(int argc, char** argv)
         return key;
     };
     auto DynamicMinVotes = [&]() -> size_t {
-        const size_t n = committee_validators.size();
-        const size_t q = ((2 * n) / 3) + 1;
-        return q > 0 ? q : 1;
-    };
-    auto IsCommitteeValidator = [&](const Bytes32& id) -> bool {
-        return committee_keyset.count(Bytes32Key(id)) != 0;
-    };
-    auto QcHasCommitteeQuorum = [&](const QuorumCertificate& qc, size_t min_votes) -> bool {
-        std::set<std::string> seen;
-        size_t cnt = 0;
-        for (size_t i = 0; i < qc.votes.size(); ++i)
-        {
-            const Vote& v = qc.votes[i];
-            const std::string k((const char*)v.validator_id.v, 32);
-            if (seen.count(k))
-                return false;
-            seen.insert(k);
-            if (committee_keyset.count(k))
-                ++cnt;
-        }
-        return cnt >= min_votes;
+        return (size_t)DrpowParams::kMinQcVotes;
     };
     auto BuildTimeoutSignMessage = [&](const TimeoutVote& tv, std::vector<uint8_t>* out) -> bool {
         if (!out)
@@ -1365,14 +1321,6 @@ int main(int argc, char** argv)
                 break;
             }
             const size_t min_votes = DynamicMinVotes();
-            if (!QcHasCommitteeQuorum(qc, min_votes))
-            {
-                printf("catchup_break_qc_non_committee_or_insufficient round=%llu votes=%zu min_votes=%zu\n",
-                       (unsigned long long)batch.round,
-                       qc.votes.size(),
-                       min_votes);
-                break;
-            }
             if (!VerifyQuorumCertificatePow(qc,
                                             batch.round,
                                             batch.batch_hash,
@@ -2538,15 +2486,6 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round);
                 return;
             }
-            if (!IsCommitteeValidator(batch.mints[0].miner_pubkey))
-            {
-                metric_propose_rejects += 1;
-                note_reject("propose_non_committee_proposer");
-                printf("drop propose non_committee_proposer round=%llu miner=%s\n",
-                       (unsigned long long)batch.round,
-                       Hex32(batch.mints[0].miner_pubkey).c_str());
-                return;
-            }
             if (!engine.Propose(batch))
             {
                 metric_propose_rejects += 1;
@@ -2581,15 +2520,6 @@ int main(int argc, char** argv)
                 printf("drop vote stale round=%llu last=%llu\n",
                        (unsigned long long)vote.round,
                        (unsigned long long)last_committed_round);
-                return;
-            }
-            if (!IsCommitteeValidator(vote.validator_id))
-            {
-                metric_vote_rejects += 1;
-                note_reject("vote_non_committee_validator");
-                printf("drop vote non_committee_validator round=%llu voter=%s\n",
-                       (unsigned long long)vote.round,
-                       Hex32(vote.validator_id).c_str());
                 return;
             }
             if (!RecordRemoteVoteTarget(vote.round, vote.validator_id, vote.batch_hash))
@@ -2711,11 +2641,6 @@ int main(int argc, char** argv)
                 note_reject("timeout_vote_stale");
                 return;
             }
-            if (!IsCommitteeValidator(tv.validator_id))
-            {
-                note_reject("timeout_vote_non_committee_validator");
-                return;
-            }
             std::vector<uint8_t> m;
             if (!BuildTimeoutSignMessage(tv, &m))
             {
@@ -2800,16 +2725,6 @@ int main(int argc, char** argv)
                 return;
             }
             const size_t min_votes = DynamicMinVotes();
-            if (!QcHasCommitteeQuorum(qc, min_votes))
-            {
-                metric_commit_rejects += 1;
-                note_reject("commit_qc_non_committee_or_insufficient");
-                printf("drop commit qc_non_committee_or_insufficient round=%llu votes=%zu min_votes=%zu\n",
-                       (unsigned long long)batch.round,
-                       qc.votes.size(),
-                       min_votes);
-                return;
-            }
             if (!VerifyQuorumCertificatePow(qc,
                                             batch.round,
                                             batch.batch_hash,
@@ -2931,7 +2846,7 @@ int main(int argc, char** argv)
     const uint64_t adaptive_proposal_window_max_ms =
         ParseEnvU64Clamped("ADAPTIVE_PROPOSAL_WINDOW_MAX_MS", 10000ULL, 100ULL, 60000ULL);
     const uint64_t adaptive_round_timeout_min_ms =
-        ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MIN_MS", 5000ULL, 1000ULL, 300000ULL);
+        ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MIN_MS", 30000ULL, 1000ULL, 300000ULL);
     const uint64_t adaptive_round_timeout_max_ms =
         ParseEnvU64Clamped("ADAPTIVE_ROUND_TIMEOUT_MAX_MS", 180000ULL, 5000ULL, 600000ULL);
     adaptive_proposal_window_ms = proposal_window_ms;
@@ -3307,7 +3222,9 @@ int main(int argc, char** argv)
         const uint64_t target_round = last_committed_round + 1;
         if (cfg.autopropose != 0 && autopropose_sync_gate_ok && have_peers &&
             (uint64_t)no_progress_sec * 1000ULL >= adaptive_round_timeout_ms &&
-            !timeout_vote_sent_rounds.count(target_round))
+            !timeout_vote_sent_rounds.count(target_round) &&
+            round_best_batch_key.count(target_round) &&
+            !local_vote_by_round.count(target_round))
         {
             TimeoutVote tv;
             tv.round = target_round;
@@ -3342,45 +3259,11 @@ int main(int argc, char** argv)
             }
         }
         auto IsLocalRoundLeader = [&](uint64_t round, Bytes32* out_winner, size_t* out_n) -> bool {
-            if (timeout_qc_rounds.count(round))
-            {
-                if (out_winner)
-                    *out_winner = signer_id;
-                if (out_n)
-                    *out_n = committee_validators.size();
-                return true;
-            }
-            if (out_n)
-                *out_n = committee_validators.size();
-            Bytes32 best_score;
-            memset(best_score.v, 0xff, 32);
-            Bytes32 best_id = signer_id;
-            bool have = false;
-            for (size_t i = 0; i < committee_validators.size(); ++i)
-            {
-                const Bytes32& id = committee_validators[i];
-                std::vector<uint8_t> msg;
-                const char* tag = "DRPOW:leader:v1";
-                while (*tag)
-                    msg.push_back((uint8_t)*tag++);
-                WriteU64LE(&msg, round);
-                msg.insert(msg.end(), id.v, id.v + 32);
-                Bytes32 score;
-                if (!Sha256(msg, &score))
-                    continue;
-                if (!have || memcmp(score.v, best_score.v, 32) < 0 ||
-                    (memcmp(score.v, best_score.v, 32) == 0 && memcmp(id.v, best_id.v, 32) < 0))
-                {
-                    best_score = score;
-                    best_id = id;
-                    have = true;
-                }
-            }
-            if (!have)
-                return true;
             if (out_winner)
-                *out_winner = best_id;
-            return memcmp(best_id.v, signer_id.v, 32) == 0;
+                *out_winner = signer_id;
+            if (out_n)
+                *out_n = 0;
+            return true;
         };
         if (cfg.autopropose != 0 &&
             autopropose_sync_gate_ok &&
