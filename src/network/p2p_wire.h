@@ -17,6 +17,7 @@ enum WireMsgType {
     WIRE_MSG_HELLO = 0,
     WIRE_MSG_HELLO_CHALLENGE = 10,
     WIRE_MSG_HELLO_AUTH = 11,
+    WIRE_MSG_TIMEOUT_VOTE = 12,
     WIRE_MSG_TX = 1,
     WIRE_MSG_PROPOSE = 2,
     WIRE_MSG_VOTE = 3,
@@ -38,6 +39,13 @@ struct WireEnvelope {
     std::vector<uint8_t> payload;
 };
 
+struct TimeoutVote {
+    uint64_t round = 0;
+    Bytes32 validator_id = Bytes32();
+    Bytes32 lock_batch_hash = Bytes32();
+    std::vector<uint8_t> signature;
+};
+
 uint32_t WireMagicMainnet();
 bool WireSetMagic(uint32_t magic);
 size_t WireMaxPayloadBytes();
@@ -47,6 +55,8 @@ bool SerializeRoundBatchPayload(const RoundBatch& batch, std::vector<uint8_t>* o
 bool ParseRoundBatchPayload(const std::vector<uint8_t>& in, RoundBatch* out);
 bool SerializeVotePayload(const Vote& vote, std::vector<uint8_t>* out);
 bool ParseVotePayload(const std::vector<uint8_t>& in, Vote* out);
+bool SerializeTimeoutVotePayload(const TimeoutVote& vote, std::vector<uint8_t>* out);
+bool ParseTimeoutVotePayload(const std::vector<uint8_t>& in, TimeoutVote* out);
 bool SerializeCommitPayload(const RoundBatch& batch, const QuorumCertificate& qc, std::vector<uint8_t>* out);
 bool ParseCommitPayload(const std::vector<uint8_t>& in, RoundBatch* batch, QuorumCertificate* qc);
 bool SerializeSyncStatusPayload(uint64_t last_committed_round, const Bytes32& state_root, std::vector<uint8_t>* out);
