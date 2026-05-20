@@ -2770,6 +2770,7 @@ int main(int argc, char** argv)
         const uint64_t now_ms = NowMonotonicMs();
         if (now_ms < it_seen->second || (now_ms - it_seen->second) < proposal_window_ms)
             return;
+        const uint64_t proposal_elapsed_ms = now_ms - it_seen->second;
         size_t candidate_evidence = 0;
         {
             std::map<uint64_t, std::set<std::string> >::const_iterator it_candidates = round_candidate_keys.find(round);
@@ -2784,6 +2785,24 @@ int main(int argc, char** argv)
         }
         const bool saw_competing_candidate = candidate_evidence > 1;
         const bool saw_competing_vote_evidence = vote_target_evidence > 1;
+        const bool have_peer_context = !peer_last_round.empty();
+        const bool conflict_evidence = saw_competing_candidate || saw_competing_vote_evidence;
+        uint64_t solo_candidate_wait_ms = proposal_window_ms * 4ULL;
+        if (solo_candidate_wait_ms < proposal_window_ms)
+            solo_candidate_wait_ms = proposal_window_ms;
+        if (solo_candidate_wait_ms > 30000ULL)
+            solo_candidate_wait_ms = 30000ULL;
+        if (have_peer_context && !conflict_evidence && proposal_elapsed_ms < solo_candidate_wait_ms)
+        {
+            Logf(LOG_DEBUG,
+                 "[VOTE_GATE] round=%llu defer=solo_view elapsed_ms=%llu wait_ms=%llu candidates=%zu vote_targets=%zu\n",
+                 (unsigned long long)round,
+                 (unsigned long long)proposal_elapsed_ms,
+                 (unsigned long long)solo_candidate_wait_ms,
+                 candidate_evidence,
+                 vote_target_evidence);
+            return;
+        }
         Logf(LOG_DEBUG,
              "[VOTE_GATE] round=%llu candidates=%zu vote_targets=%zu competing_candidate=%d competing_vote=%d\n",
              (unsigned long long)round,
