@@ -1,106 +1,149 @@
 # Roadmap
 
+This roadmap is constrained by [`DRPOW.md`](./DRPOW.md). If any roadmap item conflicts with DRPOW normative requirements, DRPOW wins.
+
+## Protocol Lock (Non-Negotiable)
+
+1. Consensus security domain
+- DRPOW is permissionless and deterministic, but finality is not plain longest-chain PoW finality.
+- Finality is derived from **typed quorum certificates (QC)** with deterministic eligibility and weighted threshold rules defined in DRPOW.
+- Any implementation path that allows commit without valid typed QC is invalid.
+
+2. Settlement and finality semantics
+- A round commit is valid only if QC verification passes all required checks:
+  - round/hash consistency,
+  - unique voters,
+  - signature validity,
+  - eligibility-type correctness,
+  - weighted supermajority threshold.
+- Reorg across finalized rounds is forbidden by consensus rule.
+
+3. Determinism and auditability
+- Canonical state transition is deterministic over committed history.
+- Nodes may run state-first storage, but must preserve independent verifiability via deterministic commitments and replay/proof paths.
+
+4. Open participation with anti-Sybil economics
+- Admission/voting eligibility must be derived from committed on-chain data only.
+- Admission policy must include deterministic anti-Sybil controls (work threshold, newcomer limits, epoch/churn bounds).
+
 ## Main Priorities
 
-1. Quantum resistance
-- The protocol must be resistant to quantum computing attacks.
-- It must also resist remote algorithmic attacks against cryptography, consensus, and validation logic.
+1. Deterministic, secure DRPOW finality
+- Eliminate all legacy vote-count shortcuts and local-policy bypasses.
+- Freeze typed QC formula, constants, and eligibility semantics as consensus-locked configuration.
 
-2. Maximum confidentiality
-- Transactions must not reveal user identity.
-- The system should be designed for the highest practical confidentiality at protocol level, not only wallet/UI level.
+2. Monetary and state safety
+- Enforce no-inflation and single-use invariants in every commit path.
+- Ensure all commit/reorg/replay paths preserve identical accounting and state roots.
 
-3. State-first ledger (result, not full history storage)
-- The chain should represent deterministic database state changes.
-- The core persisted value should be the latest ownership state (final balances/rights), not mandatory full historical transaction storage in node DB.
-- Example target behavior:
-  - Alice public key balance: 150
-  - Alice transfers 10 to Bob
-  - New state: Alice 140, Bob 10
-- Public key acts as ownership reference and authorization target; private key control authorizes state changes.
-- Design requirement: keep verifiability/auditability while prioritizing final-state storage.
+3. Bounded validation cost
+- Enforce strict caps on spends/mints/proofs/payload size.
+- Keep worst-case verification cost deterministic and operator-auditable.
 
-4. Instant confirmation with no reorg risk
-- Transactions must be confirmed instantly.
-- Confirmed transactions must not be reverted by forks/reorganizations.
-- This target must hold under both low and high throughput (from 1 TPS up to 10,000+ TPS target range).
+4. State-first verifiable storage
+- Keep active DB oriented to current authenticated state.
+- Preserve replay/audit guarantees with deterministic roots and transition witnesses.
 
-5. Prefer PoW if feasible
-- If these properties can be achieved with PoW, that is preferred.
-- If PoW alone cannot satisfy instant non-revertible finality safely, document the minimum additional mechanism required.
+5. Quantum-resistant + confidentiality roadmap
+- Keep PQ and confidentiality as phased upgrades that do not weaken deterministic consensus safety.
 
 ## Derived Technical Requirements
 
-- Deterministic consensus: same input state + same block/input must produce identical state transition on all honest nodes.
-- Bounded validation cost: validation must remain bounded and predictable per state transition.
-- Clean separation of layers:
-  - Consensus rules
-  - State storage/DB
-  - Networking/relay
-  - Wallet/key management
-- Consensus must not depend on UI behavior.
+- Deterministic consensus and replay.
+- Typed QC-only finality path (no untyped or fallback acceptance path).
+- Deterministic admission from on-chain data.
+- Explicit, consensus-locked anti-Sybil economics.
+- Bounded validation cost by protocol constants.
+- Clean separation of consensus/state/network/wallet layers.
 
 ## Architecture Direction
 
-### A. Consensus and finality
-- Move away from probabilistic finality based only on longest-chain behavior.
-- Introduce deterministic finalization rules so confirmed state cannot be rolled back.
+### A. Finality engine
+- Maintain a single canonical typed QC verifier used by:
+  - live commit path,
+  - sync catchup path,
+  - replay/reorg path.
+- Prohibit commit if QC fails in any path.
 
-### B. State model
-- Evolve from transaction-history-centric storage toward authenticated current state storage.
-- Keep cryptographic commitments/proofs so nodes can verify correctness without retaining unbounded full history in active DB.
+### B. Admission and eligibility
+- Implement deterministic epoch admission from committed work history.
+- Bind `eligibility_type` into signed vote bytes and enforce type correctness at verification.
 
-### C. Privacy
-- Add protocol-level privacy for sender/receiver/amount linkage resistance.
-- Add network-layer anti-metadata-leak measures for relay.
+### C. State and reorg policy
+- Keep branch/replay window above finalized round only.
+- Forbid branch switch below finalized checkpoint.
+- Make branch swap atomic with full invariant checks.
 
-### D. Post-quantum cryptography
-- Introduce post-quantum signature/key scheme(s) for authorization.
-- Version cryptographic formats so upgrades are explicit and auditable.
+### D. Storage and proofs
+- State-first persistence with authenticated commitments.
+- Deterministic recovery/rehydrate primitives for safe replay and branch execution.
+
+### E. PQ and privacy
+- Version cryptographic formats explicitly.
+- Keep validation bounded when enabling confidentiality and PQ signatures.
 
 ## Phased Plan
 
-### Phase 0: Formal spec and threat model
-- Write exact state transition specification.
-- Define finality model and safety/liveness assumptions.
-- Define threat model: reorg, eclipse, metadata deanonymization, key compromise, quantum adversary.
+### PR-1: Safety lock + deploy consistency (must stay green)
+- Enforce “no commit after insufficient QC”.
+- Keep build/config compatibility lock to prevent split-brain deployments.
+- Ensure sync/catchup uses identical QC safety gate.
 
-### Phase 1: Current codebase hardening
-- Isolate consensus-critical code from non-consensus code.
-- Remove remaining consensus coupling to wallet/network policy side effects.
-- Add deterministic test vectors for block/tx/state validity.
+### PR-2: PoW-weighted QC and deterministic fork-choice
+- Replace vote-count quorum semantics with weighted threshold semantics everywhere.
+- Normalize wire/proof structures for cumulative weight verification.
+- Implement deterministic same-round conflict resolution by valid-weighted rule.
 
-### Phase 2: State-first storage engine
-- Introduce authenticated state representation and root commitments.
-- Add snapshot/pruning model oriented to current-state persistence.
-- Ensure replay/proof verification still enables independent validation.
+### PR-3: Bounded reorg above finalized round only
+- Add explicit branch index and replay window policy.
+- Deny reorg below finalized round by rule.
+- Execute safe branch replay + atomic state swap with invariant recheck.
 
-### Phase 3: Deterministic instant finality
-- Implement finalization mechanism that prevents reorg of finalized state.
-- Validate behavior under adversarial network conditions and high throughput targets.
+### PR-4: Deterministic open admission economics
+- Finalize epoch/admission constants on-chain.
+- Implement anti-Sybil newcomer limits and deterministic churn bounds.
+- Ensure joiner behavior follows deterministic sync-first eligibility policy.
 
-### Phase 4: Privacy + PQ integration
-- Integrate PQ authorization into consensus validation.
-- Integrate confidentiality-preserving transaction/state transition format.
-- Benchmark latency, proof/signature sizes, and validator cost.
+### PR-5: DRPOW compliance closure
+- Close full DRPOW test matrix and property tests.
+- Publish fork-choice/finality assumptions and constants.
+- Mark protocol “DRPOW compliant” only after all mandatory checks pass.
 
-### Phase 5: Performance and operations
-- Optimize for 1 to 10,000+ TPS operating envelope.
-- Enforce strict resource limits and anti-DoS protections.
-- Add observability and deterministic replay/audit tooling.
+## Mandatory Security Test Gates
 
-## Open Questions
+1. No-inflation property tests over long randomized histories.
+2. Replay determinism across independent nodes.
+3. Typed QC adversarial tests:
+- wrong eligibility type,
+- duplicate voter,
+- forged signature,
+- threshold mismatch,
+- stale/future vote handling.
+4. Admission transition tests:
+- mine -> eligible -> vote under deterministic epoch rules.
+5. Partition/rejoin and byzantine network tests:
+- safety preserved,
+- bounded catchup cost,
+- no invalid commit via sync path.
+6. Reorg policy tests:
+- reorg above finalized round allowed when valid,
+- reorg below finalized round denied.
 
-1. Can PoW alone provide instant deterministic non-revertible finality?
-2. Which PQ scheme best fits verification cost, key size, and signature size constraints?
-3. What privacy design gives strongest confidentiality while keeping validation bounded?
-4. How do we preserve independent verifiability with state-first storage and reduced active history?
-5. What activation/migration strategy avoids consensus splits during transition?
+## Open Questions (Constrained)
+
+1. Exact DRPOW constants to freeze now:
+- typed weight constants,
+- quorum threshold integer form,
+- epoch/admission bounds,
+- finality depth/replay window.
+2. PQ signature suite selection under bounded verification cost.
+3. Confidential transaction design that preserves deterministic validation bounds.
 
 ## Success Criteria
 
-- Confirmed transactions are non-revertible by consensus rule.
-- Node consensus depends on deterministic state transition logic only.
-- Active node DB is state-first while still cryptographically verifiable.
-- Protocol-level confidentiality and PQ authorization are both native.
-- System remains auditable, testable, and bounded in validation cost.
+- No commit is accepted without valid typed QC in any code path.
+- No inflation and single-use invariants hold under replay, sync, and reorg.
+- Admission is permissionless but deterministically anti-Sybil.
+- Reorg below finalized round is impossible by consensus rule.
+- State-first operation remains cryptographically auditable.
+- DRPOW mandatory checklist in `DRPOW.md` is fully closed.

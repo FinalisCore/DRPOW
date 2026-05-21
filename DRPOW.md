@@ -239,3 +239,59 @@ DRPOW proves that this can be done **without trusting any single operator**:
 - participation from open deterministic admission.
 
 That is the standard for “Decentralized Reusable Proof of Work.”
+
+---
+
+## 12. Implementation Status Appendix (Living)
+
+This appendix is normative for release process, not for consensus validity. It tracks implementation closure against this spec and [`roadmap.md`](./roadmap.md).
+
+### 12.1 Status Legend
+- `DONE`: implemented, tested, and merged to the active branch.
+- `PARTIAL`: code exists but missing full coverage, hardening, or path parity.
+- `MISSING`: not implemented or not wired into consensus-critical paths.
+
+### 12.2 PR-Scoped Status Matrix
+
+| Workstream | Scope | Status |
+|---|---|---|
+| PR-1 | Safety lock + deploy consistency (no commit after insufficient QC, sync-path parity, build/config compatibility lock) | PARTIAL |
+| PR-2 | Replace vote-count semantics with typed weight-threshold semantics in all QC/timeout QC paths | PARTIAL |
+| PR-3 | Branch index + bounded replay/reorg above finalized round only, atomic branch state swap | PARTIAL |
+| PR-4 | Deterministic open admission economics (epoch/churn/newcomer/work thresholds consensus-locked) | MISSING |
+| PR-5 | DRPOW compliance closure (full adversarial/property test matrix + theorem assumptions publication) | MISSING |
+
+### 12.3 Gap Map vs Section 10 Checklist
+
+| Section 10 Item | Status | Notes |
+|---|---|---|
+| Freeze and publish exact typed QC weight formula and constants | PARTIAL | Formula direction exists, but constants/versioning/public freeze must be finalized and documented. |
+| Ensure all QC paths use typed verification only | PARTIAL | Live and sync paths improved, but all fallback/legacy acceptance paths must be removed and proven by tests. |
+| Make epoch/admission constants chain-configurable and consensus-locked | MISSING | Admission still requires deterministic on-chain lock semantics and governance/update rules. |
+| Add formal no-inflation invariant checks to CI/property tests | MISSING | Invariants must be enforced via property tests, not only runtime guards. |
+| Add byzantine network simulation tests for safety/liveness claims | MISSING | Partition/rejoin/equivocation/admission-gaming simulations not fully closed. |
+| Document fork-choice and finality theorem assumptions explicitly | PARTIAL | Direction exists, but formal assumptions and bounds must be published in a single canonical note. |
+
+### 12.4 Synchronization Rules (DRPOW.md <-> roadmap.md)
+
+1. Any change to consensus-critical behavior MUST update both:
+- this appendix status rows, and
+- corresponding `roadmap.md` PR phase and test-gate status.
+
+2. A PR cannot be marked `DONE` unless all are true:
+- implementation merged,
+- deterministic tests added for affected paths,
+- negative/adversarial tests added for bypass attempts,
+- release note includes changed constants/domains/version fields.
+
+3. Any regression that re-opens a closed requirement MUST immediately downgrade status (`DONE` -> `PARTIAL` or `MISSING`) in the same patch.
+
+4. “DRPOW compliant” claim is forbidden while any Section 10 line remains non-`DONE`.
+
+### 12.5 Owner and Update Trigger
+
+- Owner: consensus maintainers for the active branch.
+- Mandatory update trigger:
+  - every consensus PR merge,
+  - every config/constant change affecting QC/admission/finality,
+  - every release candidate cut.
