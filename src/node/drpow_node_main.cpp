@@ -1760,6 +1760,12 @@ int main(int argc, char** argv)
     uint64_t metric_propose_accepts = 0;
     uint64_t metric_propose_rejects = 0;
     uint64_t metric_unsafe_mode_flips = 0;
+    uint64_t metric_pow_preempt_rounds = 0;
+    uint64_t metric_pow_preempt_remote_commit_within_window = 0;
+    uint64_t metric_pow_preempt_remote_commit_after_window = 0;
+    uint64_t metric_pow_preempt_committed_by_local = 0;
+    const uint64_t kPreemptCommitWindowSec = 90ULL;
+    std::map<uint64_t, uint64_t> preempt_round_time_sec;
     uint64_t drop_summary_last_ms = now_ms();
     bool unsafe_mode = false;
     auto note_drop = [&](const char* reason) {
@@ -1772,6 +1778,42 @@ int main(int argc, char** argv)
             return;
         reject_counters_total[std::string(reason)] += 1;
         reject_counters_window[std::string(reason)] += 1;
+    };
+    auto observe_preempt_commit_outcome = [&](uint64_t round, const Bytes32& miner_pubkey) {
+        std::map<uint64_t, uint64_t>::iterator it = preempt_round_time_sec.find(round);
+        if (it == preempt_round_time_sec.end())
+            return;
+        const uint64_t now_sec = (uint64_t)time(NULL);
+        const uint64_t elapsed_sec = (now_sec >= it->second) ? (now_sec - it->second) : 0ULL;
+        const bool committed_by_local = (memcmp(miner_pubkey.v, signer_id.v, 32) == 0);
+        if (committed_by_local)
+        {
+            metric_pow_preempt_committed_by_local += 1;
+            Logf(LOG_NORMAL,
+                 "[ASSERT][PREEMPT] round=%llu committed_by=local elapsed_sec=%llu window_sec=%llu\n",
+                 (unsigned long long)round,
+                 (unsigned long long)elapsed_sec,
+                 (unsigned long long)kPreemptCommitWindowSec);
+        }
+        else if (elapsed_sec <= kPreemptCommitWindowSec)
+        {
+            metric_pow_preempt_remote_commit_within_window += 1;
+            Logf(LOG_NORMAL,
+                 "[ASSERT][PREEMPT] round=%llu committed_by=remote elapsed_sec=%llu window_sec=%llu status=ok\n",
+                 (unsigned long long)round,
+                 (unsigned long long)elapsed_sec,
+                 (unsigned long long)kPreemptCommitWindowSec);
+        }
+        else
+        {
+            metric_pow_preempt_remote_commit_after_window += 1;
+            Logf(LOG_NORMAL,
+                 "[ASSERT][PREEMPT] round=%llu committed_by=remote elapsed_sec=%llu window_sec=%llu status=slow\n",
+                 (unsigned long long)round,
+                 (unsigned long long)elapsed_sec,
+                 (unsigned long long)kPreemptCommitWindowSec);
+        }
+        preempt_round_time_sec.erase(it);
     };
     auto send_sync_request_to_peer = [&](int fd, uint64_t from_round, uint32_t max_records) -> bool {
         if (from_round == 0)
@@ -1993,8 +2035,13 @@ int main(int argc, char** argv)
                  unsafe_reasons.empty() ? "-" : unsafe_reasons.c_str(),
                  (unsigned long long)metric_unsafe_mode_flips);
         }
+        const double preempt_fast_rate =
+            (metric_pow_preempt_rounds == 0)
+                ? 0.0
+                : ((double)metric_pow_preempt_remote_commit_within_window /
+                   (double)metric_pow_preempt_rounds);
         Logf(LOG_NORMAL,
-             "[OBS] unsafe_mode=%d propose_ok=%llu propose_reject=%llu vote_ok=%llu vote_reject=%llu commit_ok=%llu commit_reject=%llu qc_seen=%llu qc_pow_votes=%llu qc_unknown_votes=%llu rej_commit_qc_invalid=%llu rej_params_mismatch=%llu\n",
+             "[OBS] unsafe_mode=%d propose_ok=%llu propose_reject=%llu vote_ok=%llu vote_reject=%llu commit_ok=%llu commit_reject=%llu qc_seen=%llu qc_pow_votes=%llu qc_unknown_votes=%llu rej_commit_qc_invalid=%llu rej_params_mismatch=%llu pow_preempt_rounds=%llu pow_preempt_remote_commit_fast=%llu pow_preempt_remote_commit_slow=%llu pow_preempt_commit_local=%llu preempt_fast_rate=%.4f\n",
              unsafe_mode ? 1 : 0,
              (unsigned long long)metric_propose_accepts,
              (unsigned long long)metric_propose_rejects,
@@ -2006,7 +2053,12 @@ int main(int argc, char** argv)
              (unsigned long long)metric_qc_pow_votes,
              (unsigned long long)metric_qc_unknown_votes,
              (unsigned long long)reject_counters_total["commit_qc_invalid"],
-             (unsigned long long)(reject_counters_total["commit_params_hash_mismatch"] + reject_counters_total["propose_params_hash_mismatch"]));
+             (unsigned long long)(reject_counters_total["commit_params_hash_mismatch"] + reject_counters_total["propose_params_hash_mismatch"]),
+             (unsigned long long)metric_pow_preempt_rounds,
+             (unsigned long long)metric_pow_preempt_remote_commit_within_window,
+             (unsigned long long)metric_pow_preempt_remote_commit_after_window,
+             (unsigned long long)metric_pow_preempt_committed_by_local,
+             preempt_fast_rate);
         reject_counters_window.clear();
         drop_counters.clear();
         drop_summary_last_ms = now;
@@ -3116,6 +3168,8 @@ int main(int argc, char** argv)
             const uint64_t minted = SumBatchMintValue(batch);
             const uint64_t fees = SumBatchFees(batch);
             const uint64_t subsidy = MintSubsidyForRound(batch.round, economics_policy);
+            if (!batch.mints.empty())
+                observe_preempt_commit_outcome(batch.round, batch.mints[0].miner_pubkey);
             if (minted != minted_precheck || (!batch.mints.empty() && batch.mints[0].output.value != mint0_precheck))
             {
                 printf("fatal commit_post_batch_mutation round=%llu minted_now=%llu minted_pre=%llu mint0_now=%llu mint0_pre=%llu mints=%zu batch=%s\n",
@@ -3306,8 +3360,11 @@ int main(int argc, char** argv)
         {
             metric_vote_rejects += 1;
             note_reject("vote_pow_not_found");
-            printf("drop vote_pow_not_found round=%llu\n",
-                   (unsigned long long)batch.round);
+            printf("drop vote_pow_not_found round=%llu batch=%s signer=%s target=%s proof_type=vote_pow_recent\n",
+                   (unsigned long long)batch.round,
+                   Hex32(batch.batch_hash).c_str(),
+                   Hex32(signer_id).c_str(),
+                   Hex32(vote_target).c_str());
             return;
         }
         std::vector<uint8_t> m;
@@ -3427,6 +3484,8 @@ int main(int argc, char** argv)
                 const uint64_t minted = SumBatchMintValue(committed_batch);
                 const uint64_t fees = SumBatchFees(committed_batch);
                 const uint64_t subsidy = MintSubsidyForRound(committed_batch.round, economics_policy);
+                if (!committed_batch.mints.empty())
+                    observe_preempt_commit_outcome(committed_batch.round, committed_batch.mints[0].miner_pubkey);
                 if (minted != minted_precheck || (!committed_batch.mints.empty() && committed_batch.mints[0].output.value != mint0_precheck))
                 {
                     Logf(LOG_NORMAL,
@@ -3661,6 +3720,7 @@ int main(int argc, char** argv)
             }
         }
         auto IsLocalRoundLeader = [&](uint64_t round, Bytes32* out_winner, size_t* out_n) -> bool {
+            (void)round;
             if (out_winner)
                 *out_winner = signer_id;
             if (out_n)
@@ -3676,14 +3736,12 @@ int main(int argc, char** argv)
             if (!have_pending)
             {
                 Bytes32 leader_id;
-                size_t leader_n = 1;
-                const bool local_leader = IsLocalRoundLeader(target_round, &leader_id, &leader_n);
+                const bool local_leader = IsLocalRoundLeader(target_round, &leader_id, NULL);
                 if (last_leader_log_round != target_round)
                 {
                     last_leader_log_round = target_round;
-                    Logf(LOG_NORMAL, "[LEADER] round=%llu validators=%zu winner=%s local=%d\n",
+                    Logf(LOG_NORMAL, "[LEADER] round=%llu role_set=open participants=unbounded winner=%s local=%d\n",
                            (unsigned long long)target_round,
-                           leader_n,
                            Hex32(leader_id).c_str(),
                            local_leader ? 1 : 0);
                 }
@@ -3814,6 +3872,8 @@ int main(int argc, char** argv)
                 const uint64_t pow_hps = (pow_elapsed_ms > 0) ? ((pow_attempts * 1000ULL) / pow_elapsed_ms) : 0;
                 if (pow_preempted)
                 {
+                    metric_pow_preempt_rounds += 1;
+                    preempt_round_time_sec[batch.round] = (uint64_t)time(NULL);
                     Logf(LOG_NORMAL, "[POW] round=%llu status=preempted attempts=%llu elapsed_ms=%llu rate_hps=%llu\n",
                            (unsigned long long)batch.round,
                            (unsigned long long)pow_attempts,
