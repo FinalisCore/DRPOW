@@ -971,6 +971,7 @@ int main(int argc, char** argv)
     std::map<uint64_t, Bytes32> round_best_batch_score;
     std::map<uint64_t, uint64_t> round_best_batch_vote_weight;
     std::map<uint64_t, uint64_t> round_first_seen_ms;
+    std::map<uint64_t, uint64_t> round_last_activity_ms;
     std::map<uint64_t, std::set<std::string> > round_candidate_keys;
     std::map<uint64_t, std::set<std::string> > round_vote_batch_keys;
     std::map<uint64_t, std::map<std::string, TimeoutVote> > timeout_votes_by_round;
@@ -1211,6 +1212,7 @@ int main(int argc, char** argv)
             round_best_batch_score.erase(r);
             round_best_batch_vote_weight.erase(r);
             round_first_seen_ms.erase(r);
+            round_last_activity_ms.erase(r);
             round_candidate_keys.erase(r);
             round_vote_batch_keys.erase(r);
             timeout_votes_by_round.erase(r);
@@ -1225,6 +1227,7 @@ int main(int argc, char** argv)
     auto SetRoundMode = [&](uint64_t round, int mode, const char* reason) {
         if (round == 0)
             return;
+        round_last_activity_ms[round] = NowMonotonicMs();
         std::map<uint64_t, int>::const_iterator it = round_mode_state.find(round);
         if (it != round_mode_state.end() && it->second == mode)
             return;
@@ -1266,6 +1269,7 @@ int main(int argc, char** argv)
         if (it == local_vote_by_round.end())
         {
             local_vote_by_round[round] = batch_hash;
+            round_last_activity_ms[round] = NowMonotonicMs();
             SetRoundMode(round, ROUND_MODE_VOTED_LOCKED, "local_vote_emitted");
             return true;
         }
@@ -1374,6 +1378,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
+            round_last_activity_ms[batch.round] = NowMonotonicMs();
             RememberCommitTarget(batch.round, batch.batch_hash);
             AdvanceSyncedTipFromCommit(last_committed_round);
             PurgeCommittedPending(last_committed_round);
@@ -1501,6 +1506,7 @@ int main(int argc, char** argv)
         last_committed_round = store.LastVerifiedCommitRound();
         last_progress_round = last_committed_round;
         last_progress_time = time(NULL);
+        round_last_activity_ms[last_committed_round] = NowMonotonicMs();
         AdvanceSyncedTipFromCommit(last_committed_round);
         PurgeCommittedPending(last_committed_round);
         branch_candidates_by_round.clear();
@@ -1863,6 +1869,7 @@ int main(int argc, char** argv)
         uint64_t now_round_ms = NowMonotonicMs();
         if (!round_first_seen_ms.count(round))
             round_first_seen_ms[round] = now_round_ms;
+        round_last_activity_ms[round] = now_round_ms;
         Bytes32 score;
         (void)proposal_score_for_batch(batch, &score);
         std::map<uint64_t, std::string>::const_iterator it_key = round_best_batch_key.find(round);
@@ -3102,6 +3109,7 @@ int main(int argc, char** argv)
             last_committed_round = batch.round;
             last_progress_round = last_committed_round;
             last_progress_time = time(NULL);
+            round_last_activity_ms[batch.round] = NowMonotonicMs();
             RememberCommitTarget(batch.round, batch.batch_hash);
             AdvanceSyncedTipFromCommit(last_committed_round);
             PurgeCommittedPending(last_committed_round);
@@ -3412,6 +3420,7 @@ int main(int argc, char** argv)
                 last_committed_round = committed_batch.round;
                 last_progress_round = last_committed_round;
                 last_progress_time = time(NULL);
+                round_last_activity_ms[committed_batch.round] = NowMonotonicMs();
                 RememberCommitTarget(committed_batch.round, committed_batch.batch_hash);
                 AdvanceSyncedTipFromCommit(last_committed_round);
                 PurgeCommittedPending(last_committed_round);
@@ -3604,11 +3613,19 @@ int main(int argc, char** argv)
         }
         const bool autopropose_sync_gate_ok = is_synced_or_standalone && !sync_first;
         const uint64_t target_round = last_committed_round + 1;
+        bool round_timeout_elapsed = false;
+        {
+            const uint64_t nowm = NowMonotonicMs();
+            std::map<uint64_t, uint64_t>::const_iterator it_act = round_last_activity_ms.find(target_round);
+            const uint64_t last_act = (it_act == round_last_activity_ms.end()) ? nowm : it_act->second;
+            round_timeout_elapsed = (nowm >= last_act) && ((nowm - last_act) >= adaptive_round_timeout_ms);
+        }
         if (cfg.autopropose != 0 && autopropose_sync_gate_ok && have_peers &&
-            (uint64_t)no_progress_sec * 1000ULL >= adaptive_round_timeout_ms &&
+            round_timeout_elapsed &&
             !timeout_vote_sent_rounds.count(target_round) &&
             !timeout_qc_rounds.count(target_round) &&
             round_best_batch_key.count(target_round) &&
+            !HasPendingRound(target_round) &&
             !local_vote_by_round.count(target_round))
         {
             TimeoutVote tv;
@@ -3727,6 +3744,7 @@ int main(int argc, char** argv)
                 const uint64_t pow_time_budget_ms = dynamic_pow_time_budget_ms;
                 uint64_t pow_attempts = 0;
                 bool pow_found = false;
+                bool pow_preempted = false;
                 uint64_t nonce_cursor = ((uint64_t)time(NULL) << 32) ^ ((uint64_t)getpid() << 16) ^ batch.round;
                 Bytes32 parent_root;
                 if (!store.ReadStateRoot(&parent_root))
@@ -3746,6 +3764,15 @@ int main(int argc, char** argv)
                 Bytes32 proposer_pow_hash;
                 while (true)
                 {
+                    if ((pow_attempts & 2047ULL) == 0ULL)
+                    {
+                        reactor.PollOnce();
+                        if (last_committed_round >= batch.round)
+                        {
+                            pow_preempted = true;
+                            break;
+                        }
+                    }
                     const uint64_t now_ms = NowMonotonicMs();
                     if (now_ms > pow_start_ms && (now_ms - pow_start_ms) >= pow_time_budget_ms)
                         break;
@@ -3766,6 +3793,17 @@ int main(int argc, char** argv)
                         break;
                     }
                     ++pow_attempts;
+                    {
+                        const std::string local_batch_key = Bytes32Key(batch.batch_hash);
+                        std::map<uint64_t, std::string>::const_iterator it_best_live = round_best_batch_key.find(batch.round);
+                        if (it_best_live != round_best_batch_key.end() &&
+                            !it_best_live->second.empty() &&
+                            it_best_live->second != local_batch_key)
+                        {
+                            pow_preempted = true;
+                            break;
+                        }
+                    }
                     if (memcmp(proposer_pow_hash.v, proposer_target_half.v, 32) <= 0)
                     {
                         pow_found = true;
@@ -3774,6 +3812,21 @@ int main(int argc, char** argv)
                 }
                 const uint64_t pow_elapsed_ms = (NowMonotonicMs() >= pow_start_ms) ? (NowMonotonicMs() - pow_start_ms) : 0;
                 const uint64_t pow_hps = (pow_elapsed_ms > 0) ? ((pow_attempts * 1000ULL) / pow_elapsed_ms) : 0;
+                if (pow_preempted)
+                {
+                    Logf(LOG_NORMAL, "[POW] round=%llu status=preempted attempts=%llu elapsed_ms=%llu rate_hps=%llu\n",
+                           (unsigned long long)batch.round,
+                           (unsigned long long)pow_attempts,
+                           (unsigned long long)pow_elapsed_ms,
+                           (unsigned long long)pow_hps);
+                    for (size_t i = 0; i < drained_spends.size(); ++i)
+                    {
+                        std::string readd_err;
+                        (void)mempool.AddSpend(drained_spends[i], &readd_err);
+                    }
+                    last_autopropose_tick = time(NULL);
+                    continue;
+                }
                 if (!pow_found)
                 {
                     Logf(LOG_NORMAL, "[POW] round=%llu status=not_found attempts=%llu elapsed_ms=%llu rate_hps=%llu\n",
