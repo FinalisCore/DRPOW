@@ -811,15 +811,6 @@ int main(int argc, char** argv)
         return 2;
     }
     const std::string local_build_id = DRPOW_BUILD_ID;
-    if (!cfg.expected_build_id.empty() && cfg.expected_build_id != local_build_id)
-    {
-        printf("startup_build_id_mismatch expected=%s actual=%s config=%s\n",
-               cfg.expected_build_id.c_str(),
-               local_build_id.c_str(),
-               argv[1]);
-        printf("startup_hint: deploy identical binaries/config expected_build_id on all nodes\n");
-        return 2;
-    }
     if (!WireSetMagic(cfg.network_magic))
     {
         printf("config_error: invalid network_magic\n");
@@ -2240,18 +2231,6 @@ int main(int argc, char** argv)
                 reactor.Disconnect(peer_fd);
                 return;
             }
-            if (remote_build_id != local_build_id)
-            {
-                note_drop("hello_build_id_mismatch");
-                Logf(LOG_NORMAL,
-                     "[HANDSHAKE] reject peer_id=%s endpoint=%s reason=build_id_mismatch remote_build_id=%s local_build_id=%s\n",
-                     Hex32(node_id).c_str(),
-                     reactor.PeerEndpoint(peer_fd).empty() ? "<unknown>" : reactor.PeerEndpoint(peer_fd).c_str(),
-                     remote_build_id.c_str(),
-                     local_build_id.c_str());
-                reactor.Disconnect(peer_fd);
-                return;
-            }
             if (remote_params_version != DrpowParamsVersionTag() ||
                 memcmp(remote_params_hash.v, params_hash.v, 32) != 0)
             {
@@ -2272,10 +2251,19 @@ int main(int argc, char** argv)
             peer_node_id_by_fd[peer_fd] = node_id;
             peer_fd_by_node_id[std::string((const char*)node_id.v, 32)] = peer_fd;
             std::string ep = reactor.PeerEndpoint(peer_fd);
-            Logf(LOG_NORMAL, "[HANDSHAKE] ok peer_id=%s endpoint=%s build_id=%s params_version=%s params_hash=%s\n",
+            if (remote_build_id != local_build_id)
+            {
+                Logf(LOG_NORMAL,
+                     "[HANDSHAKE] warn peer_id=%s endpoint=%s reason=build_id_mismatch remote_build_id=%s local_build_id=%s\n",
+                     Hex32(node_id).c_str(),
+                     ep.empty() ? "<unknown>" : ep.c_str(),
+                     remote_build_id.c_str(),
+                     local_build_id.c_str());
+            }
+            Logf(LOG_NORMAL, "[HANDSHAKE] ok peer_id=%s endpoint=%s remote_build_id=%s params_version=%s params_hash=%s\n",
                  Hex32(node_id).c_str(),
                  ep.empty() ? "<unknown>" : ep.c_str(),
-                 local_build_id.c_str(),
+                 remote_build_id.c_str(),
                  DrpowParamsVersionTag(),
                  Hex32(params_hash).c_str());
             if (!kFixedPeerMode && IsValidEndpoint(ep))
