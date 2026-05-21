@@ -194,7 +194,6 @@ signer_privkey_hex=${SIGNER_PRIVKEY_HEX}
 genesis_hash_hex=${GENESIS_HASH_HEX}
 log_level=${LOG_LEVEL}
 CFG
-  echo "expected_build_id=$(resolve_build_id)" >> "${CONF_FILE}"
   if [ -n "${BOOTSTRAP_PEERS}" ]; then
     echo "peers=${BOOTSTRAP_PEERS}" >> "${CONF_FILE}"
   fi
