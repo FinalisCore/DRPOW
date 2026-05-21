@@ -977,6 +977,7 @@ int main(int argc, char** argv)
     std::set<uint64_t> timeout_qc_rounds;
     std::set<uint64_t> timeout_vote_sent_rounds;
     std::map<int, uint64_t> peer_last_sync_req_sent_ms;
+    std::map<int, uint64_t> peer_last_sync_req_from_round;
     double rtt_ewma_ms = 0.0;
     uint64_t rtt_sample_count = 0;
     uint64_t adaptive_proposal_window_ms = 3000ULL;
@@ -1000,6 +1001,7 @@ int main(int argc, char** argv)
     }
     std::map<int, uint64_t> peer_last_round;
     std::map<int, uint64_t> peer_last_lower_round_log_local;
+    std::map<int, uint64_t> peer_last_sync_needed_log_ms;
     time_t last_progress_time = time(NULL);
     uint64_t last_progress_round = last_committed_round;
     const std::string sync_cache = cfg.data_dir + "/sync_commit.log";
@@ -1765,6 +1767,44 @@ int main(int argc, char** argv)
         reject_counters_total[std::string(reason)] += 1;
         reject_counters_window[std::string(reason)] += 1;
     };
+    auto send_sync_request_to_peer = [&](int fd, uint64_t from_round, uint32_t max_records) -> bool {
+        if (from_round == 0)
+            from_round = 1;
+        if (max_records == 0 || max_records > 256)
+            max_records = 64;
+        const uint64_t nowm = NowMonotonicMs();
+        const uint64_t kSyncReqDebounceMs = 1500ULL;
+        std::map<int, uint64_t>::const_iterator it_sent = peer_last_sync_req_sent_ms.find(fd);
+        if (it_sent != peer_last_sync_req_sent_ms.end() && nowm >= it_sent->second)
+        {
+            const uint64_t elapsed = nowm - it_sent->second;
+            if (elapsed < kSyncReqDebounceMs)
+                return false;
+        }
+        std::map<int, uint64_t>::const_iterator it_from = peer_last_sync_req_from_round.find(fd);
+        if (it_from != peer_last_sync_req_from_round.end() && it_from->second == from_round)
+        {
+            std::map<int, uint64_t>::const_iterator it_sent2 = peer_last_sync_req_sent_ms.find(fd);
+            if (it_sent2 != peer_last_sync_req_sent_ms.end() && nowm >= it_sent2->second &&
+                (nowm - it_sent2->second) < (kSyncReqDebounceMs * 2ULL))
+                return false;
+        }
+        std::vector<uint8_t> req_payload;
+        if (!SerializeSyncRequestPayload(from_round, max_records, &req_payload))
+            return false;
+        peer_last_sync_req_sent_ms[fd] = nowm;
+        peer_last_sync_req_from_round[fd] = from_round;
+        WireEnvelope req;
+        req.magic = WireMagicMainnet();
+        req.version = 1;
+        req.msg_type = WIRE_MSG_SYNC_REQUEST;
+        req.payload_len = (uint32_t)req_payload.size();
+        req.unix_ms = 0;
+        req.payload_hash = Bytes32();
+        req.payload.swap(req_payload);
+        (void)reactor.SendTo(fd, req);
+        return true;
+    };
     auto observe_qc = [&](const QuorumCertificate& qc) {
         metric_qc_seen += 1;
         for (size_t i = 0; i < qc.votes.size(); ++i)
@@ -2421,24 +2461,25 @@ int main(int argc, char** argv)
                     (void)SaveSyncedTipFile(sync_tip_file, synced_last_round, synced_state_root);
                     printf("sync_tip observed round=%llu\n", (unsigned long long)synced_last_round);
                 }
-                printf("sync_needed peer=%d peer_round=%llu local=%llu\n",
-                       peer_fd,
-                       (unsigned long long)peer_round,
-                       (unsigned long long)last_committed_round);
-                std::vector<uint8_t> req_payload;
-                if (SerializeSyncRequestPayload(last_committed_round + 1, 64, &req_payload))
+                const uint64_t nowm = NowMonotonicMs();
+                const uint64_t kSyncNeededLogDebounceMs = 3000ULL;
+                bool log_sync_needed = true;
+                std::map<int, uint64_t>::iterator it_sync_log = peer_last_sync_needed_log_ms.find(peer_fd);
+                if (it_sync_log != peer_last_sync_needed_log_ms.end() &&
+                    nowm >= it_sync_log->second &&
+                    (nowm - it_sync_log->second) < kSyncNeededLogDebounceMs)
                 {
-                    peer_last_sync_req_sent_ms[peer_fd] = NowMonotonicMs();
-                    WireEnvelope req;
-                    req.magic = WireMagicMainnet();
-                    req.version = 1;
-                    req.msg_type = WIRE_MSG_SYNC_REQUEST;
-                    req.payload_len = (uint32_t)req_payload.size();
-                    req.unix_ms = 0;
-                    req.payload_hash = Bytes32();
-                    req.payload.swap(req_payload);
-                    (void)reactor.Broadcast(req);
+                    log_sync_needed = false;
                 }
+                if (log_sync_needed)
+                {
+                    printf("sync_needed peer=%d peer_round=%llu local=%llu\n",
+                           peer_fd,
+                           (unsigned long long)peer_round,
+                           (unsigned long long)last_committed_round);
+                    peer_last_sync_needed_log_ms[peer_fd] = nowm;
+                }
+                (void)send_sync_request_to_peer(peer_fd, last_committed_round + 1, 64);
                 return;
             }
             Bytes32 local_root;
@@ -2549,6 +2590,7 @@ int main(int argc, char** argv)
                         }
                     }
                     peer_last_sync_req_sent_ms.erase(it_req_ms);
+                    peer_last_sync_req_from_round.erase(peer_fd);
                 }
             }
             size_t accepted = 0;
@@ -2579,19 +2621,7 @@ int main(int argc, char** argv)
                         printf("sync_retry_window from=%llu observed_tip=%llu\n",
                                (unsigned long long)retry_from,
                                (unsigned long long)synced_last_round);
-                        std::vector<uint8_t> req_payload;
-                        if (SerializeSyncRequestPayload(retry_from, 64, &req_payload))
-                        {
-                            WireEnvelope req;
-                            req.magic = WireMagicMainnet();
-                            req.version = 1;
-                            req.msg_type = WIRE_MSG_SYNC_REQUEST;
-                            req.payload_len = (uint32_t)req_payload.size();
-                            req.unix_ms = 0;
-                            req.payload_hash = Bytes32();
-                            req.payload.swap(req_payload);
-                            (void)reactor.Broadcast(req);
-                        }
+                        (void)send_sync_request_to_peer(peer_fd, retry_from, 64);
                     }
                 }
                 return;
@@ -3577,6 +3607,7 @@ int main(int argc, char** argv)
         if (cfg.autopropose != 0 && autopropose_sync_gate_ok && have_peers &&
             (uint64_t)no_progress_sec * 1000ULL >= adaptive_round_timeout_ms &&
             !timeout_vote_sent_rounds.count(target_round) &&
+            !timeout_qc_rounds.count(target_round) &&
             round_best_batch_key.count(target_round) &&
             !local_vote_by_round.count(target_round))
         {
