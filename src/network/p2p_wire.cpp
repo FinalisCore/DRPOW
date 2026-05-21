@@ -702,10 +702,11 @@ bool SerializeHelloAuthPayload(const Bytes32& node_id,
                                const Bytes32& challenge,
                                const char* params_version,
                                const Bytes32& params_hash,
+                               const char* build_id,
                                const std::vector<uint8_t>& signature,
                                std::vector<uint8_t>* out)
 {
-    if (!out || !params_version)
+    if (!out || !params_version || !build_id)
         return false;
     out->clear();
     out->insert(out->end(), node_id.v, node_id.v + 32);
@@ -716,6 +717,11 @@ bool SerializeHelloAuthPayload(const Bytes32& node_id,
     WriteU64LE(out, (uint64_t)version_n);
     out->insert(out->end(), params_version, params_version + version_n);
     out->insert(out->end(), params_hash.v, params_hash.v + 32);
+    const size_t build_n = strlen(build_id);
+    if (build_n == 0 || build_n > 128)
+        return false;
+    WriteU64LE(out, (uint64_t)build_n);
+    out->insert(out->end(), build_id, build_id + build_n);
     WriteU64LE(out, (uint64_t)signature.size());
     out->insert(out->end(), signature.begin(), signature.end());
     return true;
@@ -726,9 +732,10 @@ bool ParseHelloAuthPayload(const std::vector<uint8_t>& in,
                            Bytes32* challenge,
                            std::string* params_version,
                            Bytes32* params_hash,
+                           std::string* build_id,
                            std::vector<uint8_t>* signature)
 {
-    if (!node_id || !challenge || !params_version || !params_hash || !signature || in.size() < 32 + 32 + 8 + 32 + 8)
+    if (!node_id || !challenge || !params_version || !params_hash || !build_id || !signature || in.size() < 32 + 32 + 8 + 32 + 8 + 8)
         return false;
     size_t off = 0;
     if (!ReadBytesLocal(&in[0], in.size(), &off, node_id->v, 32))
@@ -744,6 +751,13 @@ bool ParseHelloAuthPayload(const std::vector<uint8_t>& in,
     off += (size_t)version_n;
     if (!ReadBytesLocal(&in[0], in.size(), &off, params_hash->v, 32))
         return false;
+    uint64_t build_n = 0;
+    if (!ReadU64LELocal(&in[0], in.size(), &off, &build_n))
+        return false;
+    if (build_n == 0 || build_n > 128 || off + (size_t)build_n > in.size())
+        return false;
+    build_id->assign((const char*)&in[off], (size_t)build_n);
+    off += (size_t)build_n;
     uint64_t sig_n = 0;
     if (!ReadU64LELocal(&in[0], in.size(), &off, &sig_n))
         return false;

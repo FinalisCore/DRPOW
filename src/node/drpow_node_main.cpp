@@ -1657,11 +1657,12 @@ int main(int argc, char** argv)
                                      const Bytes32& node_id,
                                      const char* remote_params_version,
                                      const Bytes32& remote_params_hash,
+                                     const char* remote_build_id,
                                      std::vector<uint8_t>* out) {
         if (!out)
             return false;
         out->clear();
-        const char* tag = "DRPOW:hello_auth:v1";
+        const char* tag = "DRPOW:hello_auth:v2";
         while (*tag)
             out->push_back((uint8_t)*tag++);
         out->insert(out->end(), challenge.v, challenge.v + 32);
@@ -1671,6 +1672,10 @@ int main(int argc, char** argv)
         WriteU64LE(out, (uint64_t)pv_n);
         out->insert(out->end(), pv, pv + pv_n);
         out->insert(out->end(), remote_params_hash.v, remote_params_hash.v + 32);
+        const char* bid = remote_build_id ? remote_build_id : "";
+        const size_t bid_n = strlen(bid);
+        WriteU64LE(out, (uint64_t)bid_n);
+        out->insert(out->end(), bid, bid + bid_n);
         return true;
     };
     auto get_rate = [&](int fd) -> PeerRateState& {
@@ -2172,13 +2177,13 @@ int main(int argc, char** argv)
                 return;
             }
             std::vector<uint8_t> m;
-            if (!build_auth_sign_bytes(challenge, signer_id, DrpowParamsVersionTag(), params_hash, &m))
+            if (!build_auth_sign_bytes(challenge, signer_id, DrpowParamsVersionTag(), params_hash, local_build_id.c_str(), &m))
                 return;
             std::vector<uint8_t> sig;
             if (!crypto->SignEd25519(signer_priv, m.empty() ? NULL : &m[0], m.size(), &sig))
                 return;
             std::vector<uint8_t> ap;
-            if (!SerializeHelloAuthPayload(signer_id, challenge, DrpowParamsVersionTag(), params_hash, sig, &ap))
+            if (!SerializeHelloAuthPayload(signer_id, challenge, DrpowParamsVersionTag(), params_hash, local_build_id.c_str(), sig, &ap))
                 return;
             WireEnvelope out;
             out.magic = WireMagicMainnet();
@@ -2197,8 +2202,9 @@ int main(int argc, char** argv)
             Bytes32 challenge;
             Bytes32 remote_params_hash;
             std::string remote_params_version;
+            std::string remote_build_id;
             std::vector<uint8_t> sig;
-            if (!ParseHelloAuthPayload(env.payload, &node_id, &challenge, &remote_params_version, &remote_params_hash, &sig))
+            if (!ParseHelloAuthPayload(env.payload, &node_id, &challenge, &remote_params_version, &remote_params_hash, &remote_build_id, &sig))
             {
                 penalize_peer(peer_fd, 10, "hello_auth_parse_failed");
                 reactor.Disconnect(peer_fd);
@@ -2219,7 +2225,7 @@ int main(int argc, char** argv)
                 return;
             }
             std::vector<uint8_t> m;
-            if (!build_auth_sign_bytes(challenge, node_id, remote_params_version.c_str(), remote_params_hash, &m))
+            if (!build_auth_sign_bytes(challenge, node_id, remote_params_version.c_str(), remote_params_hash, remote_build_id.c_str(), &m))
             {
                 reactor.Disconnect(peer_fd);
                 return;
@@ -2231,6 +2237,18 @@ int main(int argc, char** argv)
                                        sig.size()))
             {
                 penalize_peer(peer_fd, 12, "hello_auth_bad_sig");
+                reactor.Disconnect(peer_fd);
+                return;
+            }
+            if (remote_build_id != local_build_id)
+            {
+                note_drop("hello_build_id_mismatch");
+                Logf(LOG_NORMAL,
+                     "[HANDSHAKE] reject peer_id=%s endpoint=%s reason=build_id_mismatch remote_build_id=%s local_build_id=%s\n",
+                     Hex32(node_id).c_str(),
+                     reactor.PeerEndpoint(peer_fd).empty() ? "<unknown>" : reactor.PeerEndpoint(peer_fd).c_str(),
+                     remote_build_id.c_str(),
+                     local_build_id.c_str());
                 reactor.Disconnect(peer_fd);
                 return;
             }
@@ -2254,9 +2272,10 @@ int main(int argc, char** argv)
             peer_node_id_by_fd[peer_fd] = node_id;
             peer_fd_by_node_id[std::string((const char*)node_id.v, 32)] = peer_fd;
             std::string ep = reactor.PeerEndpoint(peer_fd);
-            Logf(LOG_NORMAL, "[HANDSHAKE] ok peer_id=%s endpoint=%s params_version=%s params_hash=%s\n",
+            Logf(LOG_NORMAL, "[HANDSHAKE] ok peer_id=%s endpoint=%s build_id=%s params_version=%s params_hash=%s\n",
                  Hex32(node_id).c_str(),
                  ep.empty() ? "<unknown>" : ep.c_str(),
+                 local_build_id.c_str(),
                  DrpowParamsVersionTag(),
                  Hex32(params_hash).c_str());
             if (!kFixedPeerMode && IsValidEndpoint(ep))

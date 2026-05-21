@@ -83,6 +83,7 @@ bool SerializeHelloAuthPayload(const Bytes32& node_id,
                                const Bytes32& challenge,
                                const char* params_version,
                                const Bytes32& params_hash,
+                               const char* build_id,
                                const std::vector<uint8_t>& signature,
                                std::vector<uint8_t>* out);
 bool ParseHelloAuthPayload(const std::vector<uint8_t>& in,
@@ -90,6 +91,7 @@ bool ParseHelloAuthPayload(const std::vector<uint8_t>& in,
                            Bytes32* challenge,
                            std::string* params_version,
                            Bytes32* params_hash,
+                           std::string* build_id,
                            std::vector<uint8_t>* signature);
 
 }  
