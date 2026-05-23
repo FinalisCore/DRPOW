@@ -1,5 +1,15 @@
 # DRPOW
 
+## Testnet Rollout Docs
+
+- Global readiness gates: [`docs/global-testnet-readiness.md`](./docs/global-testnet-readiness.md)
+- Operator launch checklist: [`docs/global-testnet-operator-checklist.md`](./docs/global-testnet-operator-checklist.md)
+- Launch manifest (pilot): [`docs/global_testnet_manifest_v1.md`](./docs/global_testnet_manifest_v1.md)
+- Soak execution plan: [`docs/global-testnet-soak-plan.md`](./docs/global-testnet-soak-plan.md)
+- Pilot-open announcement checklist: [`docs/pilot-open-announcement-checklist.md`](./docs/pilot-open-announcement-checklist.md)
+- Soak report template: [`docs/global-testnet-soak-report-template.md`](./docs/global-testnet-soak-report-template.md)
+- Log parser: `src/scripts/analyze_testnet_log.sh`
+
 ## Run Node
 
 Only two launcher scripts exist:
@@ -73,4 +83,32 @@ Send transaction:
 ```bash
 cd /home/greendragon/Desktop/coin/src
 build/drpow_cli send --to <address> --amount 0.001 --node 127.0.0.1:29101
+```
+
+## systemd Service (`drpow`)
+
+Service files:
+- `src/systemd/drpow.service`
+- `src/systemd/drpow.env.example`
+- installer: `src/scripts/install_systemd_drpow.sh`
+
+Install and enable:
+
+```bash
+cd /home/greendragon/Desktop/coin/src
+sudo ./scripts/install_systemd_drpow.sh
+```
+
+Configure runtime:
+
+```bash
+sudo nano /etc/default/drpow
+```
+
+Start and inspect:
+
+```bash
+sudo systemctl restart drpow
+sudo systemctl status drpow --no-pager
+sudo journalctl -u drpow -f
 ```

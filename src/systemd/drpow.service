@@ -1,0 +1,23 @@
+[Unit]
+Description=DRPOW Node Service
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/drpow
+ExecStart=/bin/bash -lc 'runuser -u "${RUN_AS_USER:-greendragon}" -- bash -lc "cd \"${DRPOW_SRC_DIR:-/home/greendragon/Desktop/coin/src}\" && exec ./scripts/start_testnet.sh"'
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=60
+NoNewPrivileges=true
+LimitNOFILE=65535
+
+# Journald logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
