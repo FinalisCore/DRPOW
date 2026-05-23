@@ -52,7 +52,7 @@ bool LoadNodeConfig(const std::string& path, NodeConfig* out, std::string* err)
 
     NodeConfig cfg;
     cfg.data_dir = "/tmp/drpow_node";
-    cfg.bind_port = 29101;
+    cfg.bind_port = 19440;
     cfg.public_endpoint = "";
     cfg.duration_sec = 15;
     cfg.autopropose = 0;

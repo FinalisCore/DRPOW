@@ -23,8 +23,8 @@ Publish date: `TBD`
 ## 2. Node Runtime Baseline
 
 1. Port and endpoint
-- Default p2p port: `29101`
-- Operators MUST set `PUBLIC_ENDPOINT=<public_ip>:29101`.
+- Default p2p port: `19440`
+- Operators MUST set `PUBLIC_ENDPOINT=<public_ip>:19440`.
 
 2. Launcher
 - Script: `src/scripts/start_testnet.sh`
@@ -39,7 +39,7 @@ Publish date: `TBD`
 
 Current pilot seed placeholders (replace with real hosts before announcement):
 
-1. `seed-1`: `85.217.171.168:29101`
+1. `seed-1`: `85.217.171.168:19440`
 2. `seed-2`: `TBD`
 3. `seed-3`: `TBD`
 
@@ -85,9 +85,9 @@ Requirements before public announcement:
 ```bash
 cd /home/greendragon/Desktop/coin/src
 AUTOPROPOSE=1 \
-BIND_PORT=29101 \
-PUBLIC_ENDPOINT=<public_ip>:29101 \
-SEED_PEER=85.217.171.168:29101 \
+BIND_PORT=19440 \
+PUBLIC_ENDPOINT=<public_ip>:19440 \
+SEED_PEER=85.217.171.168:19440 \
 ./scripts/start_testnet.sh
 ```
 

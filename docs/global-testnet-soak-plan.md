@@ -75,7 +75,7 @@ AUTOPROPOSE=1 \
 POW_TARGET_PREFIX_BYTES=2 \
 BIND_PORT=<port> \
 PUBLIC_ENDPOINT=<public_ip>:<port> \
-SEED_PEER=<seed_ip>:29101 \
+SEED_PEER=<seed_ip>:19440 \
 ./scripts/start_testnet.sh
 ```
 
