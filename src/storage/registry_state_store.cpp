@@ -793,6 +793,11 @@ bool RegistryStateStore::LoadLedgerTotals()
     std::ifstream in(ledger_file_.c_str(), std::ios::binary);
     if (!in.good())
         return true;
+    in.seekg(0, std::ios::end);
+    std::streamoff sz = in.tellg();
+    if (sz == 0)
+        return true;
+    in.seekg(0, std::ios::beg);
 
     LedgerTotals t;
     in.read((char*)&t.total_supply, sizeof(t.total_supply));
