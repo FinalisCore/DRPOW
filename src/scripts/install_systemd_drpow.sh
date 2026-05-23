@@ -6,6 +6,33 @@ SERVICE_SRC="${ROOT_DIR}/systemd/drpow.service"
 ENV_EXAMPLE_SRC="${ROOT_DIR}/systemd/drpow.env.example"
 SERVICE_DST="/etc/systemd/system/drpow.service"
 ENV_DST="/etc/default/drpow"
+INSTALL_USER="${SUDO_USER:-root}"
+INSTALL_SRC_DIR="${ROOT_DIR}"
+
+resolve_home_dir() {
+  local user="$1"
+  local home_dir=""
+  home_dir="$(getent passwd "${user}" | cut -d: -f6 || true)"
+  if [ -z "${home_dir}" ]; then
+    if [ "${user}" = "root" ]; then
+      home_dir="/root"
+    else
+      home_dir="/home/${user}"
+    fi
+  fi
+  echo "${home_dir}"
+}
+
+upsert_env_kv() {
+  local key="$1"
+  local value="$2"
+  local file="$3"
+  if grep -q "^${key}=" "${file}"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "${file}"
+  else
+    echo "${key}=${value}" >> "${file}"
+  fi
+}
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root: sudo ./scripts/install_systemd_drpow.sh" >&2
@@ -25,6 +52,15 @@ if [ ! -f "${ENV_DST}" ]; then
 else
   echo "kept existing ${ENV_DST}"
 fi
+
+INSTALL_HOME="$(resolve_home_dir "${INSTALL_USER}")"
+INSTALL_DRPOW_HOME="${INSTALL_HOME}/.drpow"
+upsert_env_kv "RUN_AS_USER" "${INSTALL_USER}" "${ENV_DST}"
+upsert_env_kv "DRPOW_SRC_DIR" "${INSTALL_SRC_DIR}" "${ENV_DST}"
+upsert_env_kv "DRPOW_HOME" "${INSTALL_DRPOW_HOME}" "${ENV_DST}"
+echo "auto-configured RUN_AS_USER=${INSTALL_USER}"
+echo "auto-configured DRPOW_SRC_DIR=${INSTALL_SRC_DIR}"
+echo "auto-configured DRPOW_HOME=${INSTALL_DRPOW_HOME}"
 
 systemctl daemon-reload
 systemctl enable drpow

@@ -7,7 +7,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/drpow
-ExecStart=/bin/bash -lc 'runuser -u "${RUN_AS_USER:-greendragon}" -- bash -lc "cd \"${DRPOW_SRC_DIR:-/home/greendragon/Desktop/coin/src}\" && exec ./scripts/start_testnet.sh"'
+ExecStart=/bin/bash -lc 'set -euo pipefail; : "${RUN_AS_USER:?missing RUN_AS_USER in /etc/default/drpow}"; : "${DRPOW_SRC_DIR:?missing DRPOW_SRC_DIR in /etc/default/drpow}"; runuser -u "${RUN_AS_USER}" -- bash -lc "cd \"${DRPOW_SRC_DIR}\" && exec ./scripts/start_testnet.sh"'
 Restart=always
 RestartSec=5
 KillSignal=SIGINT
