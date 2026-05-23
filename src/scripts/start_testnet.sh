@@ -18,6 +18,9 @@ VALIDATOR_PUBKEYS_HEX="${VALIDATOR_PUBKEYS_HEX:-}"
 DURATION_SEC="${DURATION_SEC:-0}"
 LOG_LEVEL="${LOG_LEVEL:-normal}"
 DEFAULT_BOOTSTRAP_PEER="${DEFAULT_BOOTSTRAP_PEER:-${DEFAULT_SEED_PEER}}"
+BUILD_JOBS="${BUILD_JOBS:-}"
+LIBOQS_BUILD_JOBS="${LIBOQS_BUILD_JOBS:-}"
+DRPOW_BUILD_JOBS="${DRPOW_BUILD_JOBS:-}"
 
 CONFIG_DIR="${DRPOW_HOME}/config"
 DATA_DIR="${DATA_DIR:-${DRPOW_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
@@ -38,6 +41,40 @@ LIBOQS_PC_DIR="${LIBOQS_INSTALL_DIR}/lib/pkgconfig"
 LIBOQS_LIB_DIR="${LIBOQS_INSTALL_DIR}/lib"
 
 need_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "missing required command: $1" >&2; exit 1; }; }
+
+auto_build_jobs() {
+  if [ -n "${BUILD_JOBS}" ]; then
+    echo "${BUILD_JOBS}"
+    return
+  fi
+  local cores=1
+  local mem_kb=0
+  if command -v nproc >/dev/null 2>&1; then
+    cores="$(nproc 2>/dev/null || echo 1)"
+  fi
+  if [ -r /proc/meminfo ]; then
+    mem_kb="$(awk '/MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || echo 0)"
+  fi
+  local jobs=1
+  if [ "${mem_kb}" -gt 0 ]; then
+    if [ "${mem_kb}" -le 2097152 ]; then
+      jobs=1
+    elif [ "${mem_kb}" -le 4194304 ]; then
+      jobs=2
+    elif [ "${mem_kb}" -le 8388608 ]; then
+      jobs=3
+    else
+      jobs=4
+    fi
+  fi
+  if [ "${cores}" -lt "${jobs}" ]; then
+    jobs="${cores}"
+  fi
+  if [ "${jobs}" -lt 1 ]; then
+    jobs=1
+  fi
+  echo "${jobs}"
+}
 
 resolve_build_id() {
   if [ -n "${EXPECTED_BUILD_ID:-}" ]; then
@@ -129,15 +166,19 @@ install_liboqs_if_needed() {
   if [ ! -d "${LIBOQS_SRC_DIR}" ]; then
     git clone --depth=1 https://github.com/open-quantum-safe/liboqs.git "${LIBOQS_SRC_DIR}"
   fi
+  local jobs="${LIBOQS_BUILD_JOBS:-$(auto_build_jobs)}"
+  echo "build_jobs liboqs=${jobs} (override with LIBOQS_BUILD_JOBS or BUILD_JOBS)"
   mkdir -p "${LIBOQS_BUILD_DIR}"
   cmake -S "${LIBOQS_SRC_DIR}" -B "${LIBOQS_BUILD_DIR}" -GNinja -DCMAKE_INSTALL_PREFIX="${LIBOQS_INSTALL_DIR}"
-  cmake --build "${LIBOQS_BUILD_DIR}" -j
+  cmake --build "${LIBOQS_BUILD_DIR}" -j"${jobs}"
   cmake --install "${LIBOQS_BUILD_DIR}"
 }
 
 build_binaries() {
   need_cmd make
-  PKG_CONFIG_PATH="${LIBOQS_PC_DIR}" make -C "${ROOT_DIR}" USE_LIBOQS=1 drpow_node drpow_cli
+  local jobs="${DRPOW_BUILD_JOBS:-$(auto_build_jobs)}"
+  echo "build_jobs drpow=${jobs} (override with DRPOW_BUILD_JOBS or BUILD_JOBS)"
+  PKG_CONFIG_PATH="${LIBOQS_PC_DIR}" make -C "${ROOT_DIR}" -j"${jobs}" USE_LIBOQS=1 drpow_node drpow_cli
 }
 
 write_env() {
