@@ -1411,9 +1411,25 @@ int main(int argc, char** argv)
             }
             if (!engine.Commit(batch, qc))
             {
-                printf("catchup_break_commit_reject round=%llu code=%d\n",
+                printf("catchup_break_commit_reject round=%llu code=%d reason=%s\n",
                        (unsigned long long)batch.round,
-                       (int)engine.last_reject_code());
+                       (int)engine.last_reject_code(),
+                       engine.last_reject_message().empty() ? "-" : engine.last_reject_message().c_str());
+                if (engine.last_reject_code() == REJECT_STORE_BEGIN_FAILED && last_committed_round == 0)
+                {
+                    // Self-heal path: if local chain is still at genesis and store cannot
+                    // open a txn, reset local files and reload once, then retry on next loop.
+                    const bool cleared =
+                        TruncateFilePath(registry) &&
+                        TruncateFilePath(registry + ".ledger") &&
+                        TruncateFilePath(commitlog) &&
+                        TruncateFilePath(evidlog);
+                    const bool reloaded = cleared && store.ReloadFromDisk();
+                    printf("catchup_store_recover local_round=%llu cleared=%d reloaded=%d\n",
+                           (unsigned long long)last_committed_round,
+                           cleared ? 1 : 0,
+                           reloaded ? 1 : 0);
+                }
                 break;
             }
             last_committed_round = batch.round;
