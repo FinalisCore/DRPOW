@@ -298,25 +298,21 @@ static bool ReadHexKeyFile32(const std::string& key_file, uint8_t out_priv[32])
     return HexTo32(line, out_priv);
 }
 
-static bool ReadSignerHexFromConfigForDataDir(const std::string& data_dir, uint8_t out_priv[32], std::string* out_label)
+static bool ReadSignerHexFromConfig(uint8_t out_priv[32], std::string* out_label)
 {
+    (void)out_label;
     const std::string cfg = ExistingConfigPathUnderHome();
     std::ifstream in(cfg.c_str());
     if (!in.good())
         return false;
     std::string line;
-    std::string cfg_data_dir;
     std::string signer_hex;
     while (std::getline(in, line))
     {
-        if (line.find("data_dir=") == 0)
-            cfg_data_dir = line.substr(strlen("data_dir="));
-        else if (line.find("signer_privkey_hex=") == 0)
+        if (line.find("signer_privkey_hex=") == 0)
             signer_hex = line.substr(strlen("signer_privkey_hex="));
     }
-    if (cfg_data_dir.empty() || signer_hex.empty())
-        return false;
-    if (cfg_data_dir != data_dir)
+    if (signer_hex.empty())
         return false;
     if (!HexTo32(signer_hex, out_priv))
         return false;
@@ -360,14 +356,17 @@ static bool LoadWalletIdentityResolved(const char* dir,
     uint8_t priv[32];
     std::string key_label;
     bool loaded = false;
+    // Canonical source of truth: node signer key from active config.
+    loaded = ReadSignerHexFromConfig(priv, &key_label);
     if (!fallback.empty())
     {
-        loaded = ReadHexKeyFile32(fallback, priv);
-        if (loaded)
-            key_label = fallback;
+        if (!loaded)
+        {
+            loaded = ReadHexKeyFile32(fallback, priv);
+            if (loaded)
+                key_label = fallback;
+        }
     }
-    if (!loaded)
-        loaded = ReadSignerHexFromConfigForDataDir(data_dir, priv, &key_label);
     if (loaded)
     {
         WalletIdentity id;
