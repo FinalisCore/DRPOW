@@ -996,13 +996,21 @@ int main(int argc, char** argv)
     std::map<uint64_t, std::map<std::string, uint64_t> > branch_vote_weight_by_round_batch;
     uint64_t last_committed_round = store.LastVerifiedCommitRound();
     const uint64_t startup_registry_bytes = FileSizeBytes(registry);
+    const uint64_t startup_ledger_bytes = FileSizeBytes(registry + ".ledger");
     const uint64_t startup_commitlog_bytes = FileSizeBytes(commitlog);
-    if (last_committed_round == 0 && (startup_registry_bytes > 0 || startup_commitlog_bytes > 0))
+    bool startup_store_begin_ok = store.Begin();
+    if (startup_store_begin_ok)
+        store.Rollback();
+    const bool startup_store_unhealthy = !startup_store_begin_ok;
+    if (last_committed_round == 0 &&
+        (startup_registry_bytes > 0 || startup_ledger_bytes > 0 || startup_commitlog_bytes > 0 || startup_store_unhealthy))
     {
-        printf("startup_state_inconsistent data_dir=%s last_round=0 registry_bytes=%llu commitlog_bytes=%llu\n",
+        printf("startup_state_inconsistent data_dir=%s last_round=0 registry_bytes=%llu ledger_bytes=%llu commitlog_bytes=%llu store_begin_ok=%d\n",
                cfg.data_dir.c_str(),
                (unsigned long long)startup_registry_bytes,
-               (unsigned long long)startup_commitlog_bytes);
+               (unsigned long long)startup_ledger_bytes,
+               (unsigned long long)startup_commitlog_bytes,
+               startup_store_begin_ok ? 1 : 0);
         printf("startup_recovery: resetting local state files and continuing with sync/catchup\n");
         bool reset_ok = true;
         reset_ok = TruncateFilePath(registry) && reset_ok;
