@@ -1359,6 +1359,17 @@ int main(int argc, char** argv)
                 continue;
             if (batch.round != last_committed_round + 1)
             {
+                if (last_committed_round == 0 && batch.round > 1)
+                {
+                    // Bootstrap fast-forward for late joiners when peers only have recent
+                    // cached payloads. Anchor just before the first available round and
+                    // continue deterministic commit verification from there.
+                    printf("catchup_fast_forward anchor_from=%llu anchor_to=%llu\n",
+                           (unsigned long long)last_committed_round,
+                           (unsigned long long)(batch.round - 1));
+                    last_committed_round = batch.round - 1;
+                    continue;
+                }
                 printf("catchup_break_noncontiguous expected=%llu got=%llu\n",
                        (unsigned long long)(last_committed_round + 1),
                        (unsigned long long)batch.round);
