@@ -91,6 +91,15 @@ SEED_PEER=85.217.171.168:29101 \
 ./scripts/start_testnet.sh
 ```
 
+```
+cd /root/DRPOW/src
+sudo ./scripts/install_systemd_drpow.sh
+sudo systemctl daemon-reload
+sudo systemctl restart drpow
+sudo systemctl status drpow --no-pager
+sudo journalctl -u drpow -n 100 --no-pager
+```
+
 Verify startup includes:
 - `genesis_hash_ok`
 - `params_version=drpow_params_v3`
