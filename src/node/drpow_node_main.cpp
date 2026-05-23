@@ -1002,8 +1002,10 @@ int main(int argc, char** argv)
     if (startup_store_begin_ok)
         store.Rollback();
     const bool startup_store_unhealthy = !startup_store_begin_ok;
-    if (last_committed_round == 0 &&
-        (startup_registry_bytes > 0 || startup_ledger_bytes > 0 || startup_commitlog_bytes > 0 || startup_store_unhealthy))
+    const bool startup_has_persisted_state =
+        (startup_registry_bytes > 0 || startup_ledger_bytes > 0 || startup_commitlog_bytes > 0);
+    if (last_committed_round == 0 && startup_has_persisted_state &&
+        startup_store_unhealthy)
     {
         printf("startup_state_inconsistent data_dir=%s last_round=0 registry_bytes=%llu ledger_bytes=%llu commitlog_bytes=%llu store_begin_ok=%d\n",
                cfg.data_dir.c_str(),
