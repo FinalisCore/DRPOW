@@ -1821,6 +1821,10 @@ int main(int argc, char** argv)
     uint64_t metric_pow_preempt_remote_commit_within_window = 0;
     uint64_t metric_pow_preempt_remote_commit_after_window = 0;
     uint64_t metric_pow_preempt_committed_by_local = 0;
+    uint64_t metric_p2p_send_fail_propose = 0;
+    uint64_t metric_p2p_send_fail_commit = 0;
+    uint64_t metric_p2p_send_retry_ok_propose = 0;
+    uint64_t metric_p2p_send_retry_ok_commit = 0;
     const uint64_t kPreemptCommitWindowSec = 90ULL;
     std::map<uint64_t, uint64_t> preempt_round_time_sec;
     uint64_t drop_summary_last_ms = now_ms();
@@ -1871,6 +1875,25 @@ int main(int argc, char** argv)
                  (unsigned long long)kPreemptCommitWindowSec);
         }
         preempt_round_time_sec.erase(it);
+    };
+    auto broadcast_with_retry = [&](WireEnvelope& env, const char* tag, uint64_t* fail_metric, uint64_t* retry_ok_metric) -> bool {
+        if (reactor.Broadcast(env))
+            return true;
+        if (fail_metric)
+            *fail_metric += 1;
+        if (reactor.Broadcast(env))
+        {
+            if (retry_ok_metric)
+                *retry_ok_metric += 1;
+            Logf(LOG_NORMAL, "p2p_send_retry_ok type=%u tag=%s\n",
+                 (unsigned)env.msg_type,
+                 tag ? tag : "-");
+            return true;
+        }
+        Logf(LOG_NORMAL, "drop %s send_failed type=%u\n",
+             tag ? tag : "broadcast",
+             (unsigned)env.msg_type);
+        return false;
     };
     auto send_sync_request_to_peer = [&](int fd, uint64_t from_round, uint32_t max_records) -> bool {
         if (from_round == 0)
@@ -2098,7 +2121,7 @@ int main(int argc, char** argv)
                 : ((double)metric_pow_preempt_remote_commit_within_window /
                    (double)metric_pow_preempt_rounds);
         Logf(LOG_NORMAL,
-             "[OBS] unsafe_mode=%d propose_ok=%llu propose_reject=%llu vote_ok=%llu vote_reject=%llu commit_ok=%llu commit_reject=%llu qc_seen=%llu qc_pow_votes=%llu qc_unknown_votes=%llu rej_commit_qc_invalid=%llu rej_params_mismatch=%llu pow_preempt_rounds=%llu pow_preempt_remote_commit_fast=%llu pow_preempt_remote_commit_slow=%llu pow_preempt_commit_local=%llu preempt_fast_rate=%.4f\n",
+             "[OBS] unsafe_mode=%d propose_ok=%llu propose_reject=%llu vote_ok=%llu vote_reject=%llu commit_ok=%llu commit_reject=%llu qc_seen=%llu qc_pow_votes=%llu qc_unknown_votes=%llu rej_commit_qc_invalid=%llu rej_params_mismatch=%llu pow_preempt_rounds=%llu pow_preempt_remote_commit_fast=%llu pow_preempt_remote_commit_slow=%llu pow_preempt_commit_local=%llu p2p_send_fail_propose=%llu p2p_send_fail_commit=%llu p2p_send_retry_ok_propose=%llu p2p_send_retry_ok_commit=%llu preempt_fast_rate=%.4f\n",
              unsafe_mode ? 1 : 0,
              (unsigned long long)metric_propose_accepts,
              (unsigned long long)metric_propose_rejects,
@@ -2115,6 +2138,10 @@ int main(int argc, char** argv)
              (unsigned long long)metric_pow_preempt_remote_commit_within_window,
              (unsigned long long)metric_pow_preempt_remote_commit_after_window,
              (unsigned long long)metric_pow_preempt_committed_by_local,
+             (unsigned long long)metric_p2p_send_fail_propose,
+             (unsigned long long)metric_p2p_send_fail_commit,
+             (unsigned long long)metric_p2p_send_retry_ok_propose,
+             (unsigned long long)metric_p2p_send_retry_ok_commit,
              preempt_fast_rate);
         reject_counters_window.clear();
         drop_counters.clear();
@@ -3036,8 +3063,7 @@ int main(int argc, char** argv)
             out.unix_ms = 0;
             out.payload_hash = Bytes32();
             out.payload.swap(commit_payload);
-            if (!reactor.Broadcast(out))
-                printf("drop commit send_failed\n");
+            (void)broadcast_with_retry(out, "commit", &metric_p2p_send_fail_commit, &metric_p2p_send_retry_ok_commit);
             return;
         }
         if (env.msg_type == WIRE_MSG_TIMEOUT_VOTE)
@@ -3998,8 +4024,7 @@ int main(int argc, char** argv)
                     outp.unix_ms = 0;
                     outp.payload_hash = Bytes32();
                     outp.payload.swap(propose_payload);
-                    if (!reactor.Broadcast(outp))
-                        printf("drop autopropose send_failed\n");
+                    (void)broadcast_with_retry(outp, "autopropose", &metric_p2p_send_fail_propose, &metric_p2p_send_retry_ok_propose);
                 }
 
                 TryVoteCanonicalRound(target_round);

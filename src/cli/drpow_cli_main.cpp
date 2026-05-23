@@ -652,7 +652,7 @@ static int SendCmd(int argc, char** argv)
     std::string to;
     std::string amount_s;
     std::string fee_s;
-    std::string data_dir = DefaultPathUnderHome("/wallet");
+    std::string data_dir = DetectDefaultNodeDataDir();
     std::string node_data_dir;
     std::string node_ep = "127.0.0.1:19440";
     std::string magic_s = "52504f57";
@@ -705,14 +705,13 @@ static int SendCmd(int argc, char** argv)
         return 54;
     }
     const uint32_t magic = ParseMagic(magic_s.c_str());
-    const std::string registry = ResolveRegistryPath(data_dir.c_str(), NULL);
     if (node_data_dir.empty())
     {
         node_data_dir = data_dir;
         if (!IsCommitCacheFresh(node_data_dir, 30))
             printf("send_warning: node_data_dir_not_set_and_commit_cache_not_fresh using=%s\n", node_data_dir.c_str());
     }
-    int rc = WalletSendCmd(to.c_str(), amount, fee, data_dir.c_str(), node_data_dir.c_str(), magic, registry.c_str());
+    int rc = WalletSendCmd(to.c_str(), amount, fee, data_dir.c_str(), node_data_dir.c_str(), magic, NULL);
     if (rc != 0)
         return rc;
     std::string draft;
@@ -817,6 +816,16 @@ static bool LoadLedgerTotals(const std::string& ledger_file, uint64_t* supply, u
     return in.good();
 }
 
+static bool FileStatSimple(const std::string& path, uint64_t* out_size)
+{
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0)
+        return false;
+    if (out_size)
+        *out_size = (uint64_t)st.st_size;
+    return true;
+}
+
 static int WalletIdentityCmd(const char* subcmd, const char* dir, uint32_t magic)
 {
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
@@ -844,7 +853,7 @@ static int WalletIdentityCmd(const char* subcmd, const char* dir, uint32_t magic
     return 1;
 }
 
-static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_file_opt)
+static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_file_opt, const char* profile)
 {
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
     if (!crypto.get())
@@ -862,17 +871,41 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     }
 
     std::string registry_file = ResolveRegistryPath(dir, registry_file_opt);
+    const std::string ledger_file = registry_file + ".ledger";
+    const std::string node_dir = DetectDefaultNodeDataDir();
+    const std::string node_commitlog = node_dir + "/commit.log";
+    const std::string node_sync_tip = node_dir + "/sync_tip.dat";
 
     std::vector<LocalUtxo> utxos;
     uint64_t balance = 0;
     bool have_registry = LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance);
     uint64_t total_supply = 0, total_minted = 0, total_fees_burned = 0;
-    bool have_ledger = LoadLedgerTotals(registry_file + ".ledger", &total_supply, &total_minted, &total_fees_burned);
+    bool have_ledger = LoadLedgerTotals(ledger_file, &total_supply, &total_minted, &total_fees_burned);
+    uint64_t registry_bytes = 0, ledger_bytes = 0, commitlog_bytes = 0, sync_tip_bytes = 0;
+    const bool registry_exists = FileStatSimple(registry_file, &registry_bytes);
+    const bool ledger_exists = FileStatSimple(ledger_file, &ledger_bytes);
+    const bool commitlog_exists = FileStatSimple(node_commitlog, &commitlog_bytes);
+    const bool sync_tip_exists = FileStatSimple(node_sync_tip, &sync_tip_bytes);
 
+    printf("wallet_profile=%s\n", profile ? profile : "wallet");
+    printf("data_dir=%s\n", dir);
+    printf("network_magic_hex=%08x\n", (unsigned)magic);
     printf("pubkey=%s\n", AddressFromPubkey(id.pubkey, 0).substr(6, 64).c_str());
     printf("address=%s\n", id.address.c_str());
     printf("key_file=%s\n", key_file.c_str());
+    printf("node_data_dir=%s\n", node_dir.c_str());
     printf("registry_file=%s\n", registry_file.c_str());
+    printf("registry_file_exists=%d\n", registry_exists ? 1 : 0);
+    printf("registry_file_bytes=%llu\n", (unsigned long long)registry_bytes);
+    printf("ledger_file=%s\n", ledger_file.c_str());
+    printf("ledger_file_exists=%d\n", ledger_exists ? 1 : 0);
+    printf("ledger_file_bytes=%llu\n", (unsigned long long)ledger_bytes);
+    printf("node_commitlog_file=%s\n", node_commitlog.c_str());
+    printf("node_commitlog_file_exists=%d\n", commitlog_exists ? 1 : 0);
+    printf("node_commitlog_file_bytes=%llu\n", (unsigned long long)commitlog_bytes);
+    printf("node_sync_tip_file=%s\n", node_sync_tip.c_str());
+    printf("node_sync_tip_file_exists=%d\n", sync_tip_exists ? 1 : 0);
+    printf("node_sync_tip_file_bytes=%llu\n", (unsigned long long)sync_tip_bytes);
     if (!have_registry)
         printf("wallet_registry_status=unavailable\n");
     else
@@ -881,6 +914,13 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
         printf("wallet_balance=%llu\n", (unsigned long long)balance);
         printf("wallet_balance_drpow=%s\n", FormatAtomic8(balance).c_str());
     }
+    printf("wallet_send_ready=%d\n", (have_registry && balance > 0) ? 1 : 0);
+    if (!have_registry)
+        printf("wallet_send_hint=registry_missing_or_unreadable\n");
+    else if (balance == 0)
+        printf("wallet_send_hint=insufficient_funds\n");
+    else
+        printf("wallet_send_hint=ok\n");
     if (!have_ledger)
         printf("ledger_status=unavailable\n");
     else
@@ -1203,7 +1243,7 @@ int main(int argc, char** argv)
             const char* dir = (argc >= 4) ? argv[3] : default_wallet_dir.c_str();
             const char* magic_arg = (argc >= 5) ? argv[4] : NULL;
             const char* registry_file = (argc >= 6) ? argv[5] : NULL;
-            return WalletInfoCmd(dir, ParseMagic(magic_arg), registry_file);
+            return WalletInfoCmd(dir, ParseMagic(magic_arg), registry_file, "wallet");
         }
 
         if (subcmd == "miner-info")
@@ -1212,7 +1252,7 @@ int main(int argc, char** argv)
             const std::string miner_registry = miner_dir + "/registry.bin";
             const char* magic_arg = (argc >= 4) ? argv[3] : NULL;
             const char* registry_file = (argc >= 5) ? argv[4] : miner_registry.c_str();
-            return WalletInfoCmd(miner_dir.c_str(), ParseMagic(magic_arg), registry_file);
+            return WalletInfoCmd(miner_dir.c_str(), ParseMagic(magic_arg), registry_file, "miner");
         }
 
         if (subcmd == "send")
