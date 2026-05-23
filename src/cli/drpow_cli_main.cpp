@@ -995,6 +995,20 @@ static int WalletSendCmd(const char* to_address,
     }
 
     std::string registry_file = ResolveRegistryPath(dir, registry_file_opt);
+    if (registry_file_opt == NULL && node_data_dir && *node_data_dir)
+    {
+        std::ifstream reg_test(registry_file.c_str(), std::ios::binary);
+        if (!reg_test.good())
+        {
+            const std::string node_registry = ResolveRegistryPath(node_data_dir, NULL);
+            std::ifstream node_reg_test(node_registry.c_str(), std::ios::binary);
+            if (node_reg_test.good())
+            {
+                printf("send_notice: using_node_registry path=%s\n", node_registry.c_str());
+                registry_file = node_registry;
+            }
+        }
+    }
 
     std::vector<LocalUtxo> utxos;
     uint64_t balance = 0;
