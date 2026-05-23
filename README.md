@@ -34,8 +34,8 @@ Start testnet:
 ```bash
 cd /home/greendragon/Desktop/coin/src
 AUTOPROPOSE=1 \
-BIND_PORT=29101 \
-PUBLIC_ENDPOINT=192.168.0.104:29101 \
+BIND_PORT=19440 \
+PUBLIC_ENDPOINT=192.168.0.104:19440 \
 SEED_PEER= \
 ./scripts/start_testnet.sh
 ```
@@ -47,7 +47,7 @@ cd /home/greendragon/Desktop/coin/src
 AUTOPROPOSE=1 \
 BIND_PORT=29102 \
 PUBLIC_ENDPOINT=192.168.0.106:29102 \
-SEED_PEER=192.168.0.104:29101 \
+SEED_PEER=192.168.0.104:19440 \
 ./scripts/start_testnet.sh
 ```
 
@@ -55,14 +55,14 @@ Start mainnet seed:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
-BIND_PORT=29101 PUBLIC_ENDPOINT=<public_ip>:29101 ./scripts/start_mainnet.sh
+BIND_PORT=19440 PUBLIC_ENDPOINT=<public_ip>:19440 ./scripts/start_mainnet.sh
 ```
 
 Start mainnet follower:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
-BIND_PORT=29102 SEED_PEER=<seed_ip>:29101 ./scripts/start_mainnet.sh
+BIND_PORT=29102 SEED_PEER=<seed_ip>:19440 ./scripts/start_mainnet.sh
 ```
 
 Wallet commands:
@@ -82,7 +82,7 @@ Send transaction:
 
 ```bash
 cd /home/greendragon/Desktop/coin/src
-build/drpow_cli send --to <address> --amount 0.001 --node 127.0.0.1:29101
+build/drpow_cli send --to <address> --amount 0.001 --node 127.0.0.1:19440
 ```
 
 ## systemd Service (`drpow`)

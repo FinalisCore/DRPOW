@@ -655,7 +655,7 @@ static int SendCmd(int argc, char** argv)
     std::string fee_s;
     std::string data_dir = DefaultPathUnderHome("/wallet");
     std::string node_data_dir;
-    std::string node_ep = "127.0.0.1:29101";
+    std::string node_ep = "127.0.0.1:19440";
     std::string magic_s = "52504f57";
 
     for (int i = 2; i < argc; ++i)

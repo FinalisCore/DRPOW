@@ -27,7 +27,7 @@ Nodes do not use a static validator set. Any node may join, sync, and participat
 ## 4. Seed Topology
 
 Minimum bootstrap:
-- Run 1 public seed node (example: `212.58.103.170:29101`).
+- Run 1 public seed node (example: `212.58.103.170:19440`).
 - Joiners start with that seed in `peers=...`.
 
 Recommended after first bootstrap:
