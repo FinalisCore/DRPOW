@@ -23,6 +23,22 @@ LIBOQS_BUILD_JOBS="${LIBOQS_BUILD_JOBS:-}"
 DRPOW_BUILD_JOBS="${DRPOW_BUILD_JOBS:-}"
 LIBOQS_CMAKE_ARGS="${LIBOQS_CMAKE_ARGS:--DOQS_BUILD_ONLY_LIB=ON -DOQS_DIST_BUILD=ON -DOQS_USE_OPENSSL=ON -DOQS_USE_SHA3_OPENSSL=ON}"
 
+normalize_endpoint() {
+  local ep="${1:-}"
+  if [ -z "${ep}" ]; then
+    echo ""
+    return
+  fi
+  if [[ "${ep}" == *:* ]]; then
+    echo "${ep}"
+    return
+  fi
+  echo "${ep}:${DEFAULT_SEED_PORT}"
+}
+
+SEED_PEER="$(normalize_endpoint "${SEED_PEER}")"
+DEFAULT_BOOTSTRAP_PEER="$(normalize_endpoint "${DEFAULT_BOOTSTRAP_PEER}")"
+
 CONFIG_DIR="${DRPOW_HOME}/config"
 DATA_DIR="${DATA_DIR:-${DRPOW_HOME}/nodes/${NETWORK}_${BIND_PORT}}"
 PEERS_FILE="${PEERS_FILE:-${DATA_DIR}/peers.txt}"
