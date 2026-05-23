@@ -761,6 +761,12 @@ static uint64_t FileSizeBytes(const std::string& path)
     return (uint64_t)st.st_size;
 }
 
+static bool TruncateFilePath(const std::string& path)
+{
+    std::ofstream out(path.c_str(), std::ios::binary | std::ios::trunc);
+    return out.good();
+}
+
 static bool ReadFileBytes(const std::string& path, std::vector<uint8_t>* out)
 {
     if (!out)
@@ -997,8 +1003,22 @@ int main(int argc, char** argv)
                cfg.data_dir.c_str(),
                (unsigned long long)startup_registry_bytes,
                (unsigned long long)startup_commitlog_bytes);
-        printf("startup_hint: clear node state dir or restore matching signer key before restart\n");
-        return 7;
+        printf("startup_recovery: resetting local state files and continuing with sync/catchup\n");
+        bool reset_ok = true;
+        reset_ok = TruncateFilePath(registry) && reset_ok;
+        reset_ok = TruncateFilePath(registry + ".ledger") && reset_ok;
+        reset_ok = TruncateFilePath(commitlog) && reset_ok;
+        reset_ok = TruncateFilePath(evidlog) && reset_ok;
+        if (!reset_ok || !store.ReloadFromDisk())
+        {
+            printf("startup_recovery_failed data_dir=%s\n", cfg.data_dir.c_str());
+            printf("startup_hint: clear node state dir or restore matching signer key before restart\n");
+            return 7;
+        }
+        last_committed_round = store.LastVerifiedCommitRound();
+        printf("startup_recovery_ok data_dir=%s last_round=%llu\n",
+               cfg.data_dir.c_str(),
+               (unsigned long long)last_committed_round);
     }
     std::map<int, uint64_t> peer_last_round;
     std::map<int, uint64_t> peer_last_lower_round_log_local;
