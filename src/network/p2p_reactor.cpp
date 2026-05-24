@@ -187,10 +187,27 @@ bool P2PReactor::SendFramed(int fd, const WireEnvelope& env)
 
 bool P2PReactor::Broadcast(const WireEnvelope& env)
 {
-    bool ok = true;
+    bool any_success = false;
+    size_t fail_count = 0;
     for (size_t i = 0; i < peers_fd_.size(); ++i)
-        ok = SendFramed(peers_fd_[i].fd, env) && ok;
-    return ok;
+    {
+        if (SendFramed(peers_fd_[i].fd, env))
+        {
+            any_success = true;
+        }
+        else
+        {
+            fail_count += 1;
+            const std::string ep = peers_fd_[i].endpoint;
+            if (!ep.empty())
+                printf("p2p_send_failed endpoint=%s type=%u\n", ep.c_str(), (unsigned)env.msg_type);
+            else
+                printf("p2p_send_failed fd=%d type=%u\n", peers_fd_[i].fd, (unsigned)env.msg_type);
+        }
+    }
+    if (!any_success && fail_count == 0)
+        return false;  // no connected peers
+    return any_success;
 }
 
 bool P2PReactor::SendTo(int fd, const WireEnvelope& env)
