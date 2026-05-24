@@ -232,6 +232,13 @@ static bool IsValidEndpoint(const std::string& ep)
     return port > 0 && port <= 65535;
 }
 
+static bool IsLoopbackEndpoint(const std::string& ep)
+{
+    return ep.find("127.0.0.1:") == 0 ||
+           ep.find("::1:") == 0 ||
+           ep.find("[::1]:") == 0;
+}
+
 static void CanonicalizePeerList(std::vector<std::string>* peers)
 {
     if (!peers)
@@ -2516,7 +2523,13 @@ int main(int argc, char** argv)
             }
             return;
         }
-        if (!peer_node_id_by_fd.count(peer_fd))
+        bool unauth_local_tx = false;
+        if (!peer_node_id_by_fd.count(peer_fd) && env.msg_type == WIRE_MSG_TX)
+        {
+            const std::string ep = reactor.PeerEndpoint(peer_fd);
+            unauth_local_tx = IsLoopbackEndpoint(ep);
+        }
+        if (!peer_node_id_by_fd.count(peer_fd) && !unauth_local_tx)
         {
             if (env.msg_type == WIRE_MSG_SYNC_STATUS)
             {
@@ -2524,6 +2537,7 @@ int main(int argc, char** argv)
                 return;
             }
             note_drop("unauthenticated_message");
+            printf("drop unauthenticated_message fd=%d type=%u\n", peer_fd, (unsigned)env.msg_type);
             // Close unauthenticated noisy leg without score escalation.
             reactor.Disconnect(peer_fd);
             return;
