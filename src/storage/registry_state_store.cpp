@@ -503,7 +503,12 @@ bool RegistryStateStore::LoadRegistry()
             uint8_t vbuf[8];
             in.read((char*)vbuf, 8);
             if (!in.good())
+            {
+                // Empty file (or clean EOF between records) is valid.
+                if (in.eof())
+                    break;
                 return false;
+            }
             uint64_t v = 0;
             for (int i = 0; i < 8; ++i)
                 v |= ((uint64_t)vbuf[i] << (8 * i));
