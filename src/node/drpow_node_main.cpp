@@ -1042,6 +1042,9 @@ int main(int argc, char** argv)
     const std::string commitlog_checkpoint = cfg.data_dir + "/commit.checkpoint";
     const std::string reorg_snapshot_dir = cfg.data_dir + "/reorg_snapshot";
     const std::string reorg_tmp_dir = cfg.data_dir + "/reorg_tmp";
+    uint64_t catchup_target_unavail_round = 0;
+    uint64_t catchup_target_unavail_repeats = 0;
+    uint64_t force_sync_from_round = 0;
     uint64_t synced_last_round = 0;
     Bytes32 synced_state_root;
     memset(synced_state_root.v, 0, 32);
@@ -1395,6 +1398,32 @@ int main(int argc, char** argv)
             {
                 printf("catchup_break_target_unavailable round=%llu\n",
                        (unsigned long long)batch.round);
+                if (catchup_target_unavail_round == batch.round)
+                    catchup_target_unavail_repeats += 1;
+                else
+                {
+                    catchup_target_unavail_round = batch.round;
+                    catchup_target_unavail_repeats = 1;
+                }
+                if (catchup_target_unavail_repeats >= 8)
+                {
+                    const bool purge_ok =
+                        TruncateFilePath(sync_cache) &&
+                        TruncateFilePath(sync_cache_checkpoint) &&
+                        TruncateFilePath(commit_payload_cache);
+                    force_sync_from_round = (last_committed_round + 1);
+                    printf("catchup_recover target_unavailable_round=%llu repeats=%llu purge_ok=%d request_from=%llu\n",
+                           (unsigned long long)batch.round,
+                           (unsigned long long)catchup_target_unavail_repeats,
+                           purge_ok ? 1 : 0,
+                           (unsigned long long)force_sync_from_round);
+                    if (purge_ok)
+                    {
+                        synced_last_round = last_committed_round;
+                        (void)SaveSyncedTipFile(sync_tip_file, synced_last_round, synced_state_root);
+                    }
+                    catchup_target_unavail_repeats = 0;
+                }
                 break;
             }
             if (!VerifyQuorumCertificatePow(qc,
@@ -1439,6 +1468,7 @@ int main(int argc, char** argv)
             RememberCommitTarget(batch.round, batch.batch_hash);
             AdvanceSyncedTipFromCommit(last_committed_round);
             PurgeCommittedPending(last_committed_round);
+            catchup_target_unavail_repeats = 0;
             applied++;
             printf("catchup commit ok round=%llu\n", (unsigned long long)batch.round);
         }
@@ -4045,6 +4075,25 @@ int main(int argc, char** argv)
             flush_drop_summary(false);
             BroadcastSyncStatus();
             TryCatchUpFromCache();
+            if (force_sync_from_round > 0)
+            {
+                size_t req_sent = 0;
+                for (std::map<int, uint64_t>::const_iterator itp = peer_last_round.begin();
+                     itp != peer_last_round.end();
+                     ++itp)
+                {
+                    if (itp->second >= force_sync_from_round)
+                    {
+                        if (send_sync_request_to_peer(itp->first, force_sync_from_round, 64))
+                            req_sent += 1;
+                    }
+                }
+                printf("catchup_recover_request from_round=%llu peers=%zu\n",
+                       (unsigned long long)force_sync_from_round,
+                       req_sent);
+                if (req_sent > 0)
+                    force_sync_from_round = 0;
+            }
             (void)TryReplayReorgWindow();
             PersistKnownPeers();
             const uint64_t reg_sz = FileSizeBytes(registry);
