@@ -1435,6 +1435,29 @@ int main(int argc, char** argv)
                     // Clear sync request cooldown state so recovery can re-request immediately.
                     peer_last_sync_req_sent_ms.clear();
                     peer_last_sync_req_from_round.clear();
+                    bool local_reset_ok = false;
+                    // If we cannot derive target for the immediate next round repeatedly,
+                    // local commit metadata is likely inconsistent with local state.
+                    // Auto-reset local chain files and re-sync from genesis.
+                    if (batch.round == (last_committed_round + 1) && last_committed_round > 0)
+                    {
+                        const bool cleared_local =
+                            TruncateFilePath(registry) &&
+                            TruncateFilePath(registry + ".ledger") &&
+                            TruncateFilePath(commitlog) &&
+                            TruncateFilePath(evidlog) &&
+                            TruncateFilePath(sync_tip_file);
+                        if (cleared_local && store.ReloadFromDisk())
+                        {
+                            last_committed_round = 0;
+                            synced_last_round = 0;
+                            local_reset_ok = true;
+                        }
+                        printf("catchup_recover_local_reset round=%llu local_before=%llu ok=%d\n",
+                               (unsigned long long)batch.round,
+                               (unsigned long long)(batch.round - 1),
+                               local_reset_ok ? 1 : 0);
+                    }
                     force_sync_from_round = (last_committed_round + 1);
                     printf("catchup_recover target_unavailable_round=%llu repeats=%llu purge_ok=%d request_from=%llu\n",
                            (unsigned long long)batch.round,
