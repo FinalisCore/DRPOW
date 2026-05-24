@@ -1418,6 +1418,9 @@ int main(int argc, char** argv)
                         TruncateFilePath(sync_cache) &&
                         TruncateFilePath(sync_cache_checkpoint) &&
                         TruncateFilePath(commit_payload_cache);
+                    // Clear sync request cooldown state so recovery can re-request immediately.
+                    peer_last_sync_req_sent_ms.clear();
+                    peer_last_sync_req_from_round.clear();
                     force_sync_from_round = (last_committed_round + 1);
                     printf("catchup_recover target_unavailable_round=%llu repeats=%llu purge_ok=%d request_from=%llu\n",
                            (unsigned long long)batch.round,
@@ -1967,6 +1970,10 @@ int main(int argc, char** argv)
         req.unix_ms = 0;
         req.payload_hash = Bytes32();
         req.payload.swap(req_payload);
+        printf("sync_request from=%llu max=%u peer=%d\n",
+               (unsigned long long)from_round,
+               (unsigned)max_records,
+               fd);
         (void)reactor.SendTo(fd, req);
         return true;
     };
@@ -2711,12 +2718,18 @@ int main(int argc, char** argv)
                 printf("drop sync_request cache_load_failed\n");
                 return;
             }
+            uint64_t min_available_round = 0;
+            uint64_t max_available_round = 0;
             for (size_t i = 0; i < all_payloads.size(); ++i)
             {
                 uint64_t round = 0;
                 Bytes32 bh;
                 if (!PayloadContainsRoundHash(all_payloads[i], &round, &bh))
                     continue;
+                if (min_available_round == 0 || round < min_available_round)
+                    min_available_round = round;
+                if (round > max_available_round)
+                    max_available_round = round;
                 if (round < from_round)
                     continue;
                 selected_payloads.push_back(all_payloads[i]);
@@ -2733,6 +2746,15 @@ int main(int argc, char** argv)
                       });
             if (selected_payloads.size() > max_records)
                 selected_payloads.resize(max_records);
+            const char* serve_reason = "ok";
+            if (selected_payloads.empty())
+                serve_reason = (from_round < min_available_round) ? "pruned" : "missing";
+            printf("sync_serve from=%llu to=%llu served=%zu reason=%s req_max=%u\n",
+                   (unsigned long long)from_round,
+                   (unsigned long long)max_available_round,
+                   selected_payloads.size(),
+                   serve_reason,
+                   (unsigned)max_records);
             std::vector<uint8_t> rsp_payload;
             if (!SerializeSyncResponsePayload(from_round, selected_payloads, &rsp_payload))
             {
