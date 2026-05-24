@@ -1363,6 +1363,8 @@ int main(int argc, char** argv)
         {
             const RoundBatch& batch = items[i].batch;
             const QuorumCertificate& qc = items[i].qc;
+            const bool has_next_same_round =
+                ((i + 1) < items.size() && items[i + 1].batch.round == batch.round);
             if (batch.round <= last_committed_round)
                 continue;
             if (batch.round > synced_last_round)
@@ -1390,6 +1392,12 @@ int main(int argc, char** argv)
                 printf("catchup_break_qc_batch_mismatch round=%llu qc_round=%llu\n",
                        (unsigned long long)batch.round,
                        (unsigned long long)qc.round);
+                if (has_next_same_round)
+                {
+                    printf("catchup_skip_candidate round=%llu reason=qc_batch_mismatch\n",
+                           (unsigned long long)batch.round);
+                    continue;
+                }
                 break;
             }
             if (memcmp(batch.params_hash.v, params_hash.v, 32) != 0)
@@ -1398,6 +1406,12 @@ int main(int argc, char** argv)
                        (unsigned long long)batch.round,
                        Hex32(batch.params_hash).c_str(),
                        Hex32(params_hash).c_str());
+                if (has_next_same_round)
+                {
+                    printf("catchup_skip_candidate round=%llu reason=params_hash_mismatch\n",
+                           (unsigned long long)batch.round);
+                    continue;
+                }
                 break;
             }
             Bytes32 expected_target;
@@ -1446,6 +1460,12 @@ int main(int argc, char** argv)
                 printf("catchup_break_qc_invalid round=%llu votes=%zu\n",
                        (unsigned long long)batch.round,
                        qc.votes.size());
+                if (has_next_same_round)
+                {
+                    printf("catchup_skip_candidate round=%llu reason=qc_invalid\n",
+                           (unsigned long long)batch.round);
+                    continue;
+                }
                 break;
             }
             if (!engine.Commit(batch, qc))
@@ -1468,6 +1488,13 @@ int main(int argc, char** argv)
                            (unsigned long long)last_committed_round,
                            cleared ? 1 : 0,
                            reloaded ? 1 : 0);
+                }
+                if (has_next_same_round &&
+                    engine.last_reject_code() == REJECT_POW_TARGET_INVALID)
+                {
+                    printf("catchup_skip_candidate round=%llu reason=pow_target_invalid\n",
+                           (unsigned long long)batch.round);
+                    continue;
                 }
                 break;
             }
