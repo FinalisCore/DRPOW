@@ -9,10 +9,12 @@
 #include <glob.h>
 #include <sys/stat.h>
 #include <stdlib.h>
+#include <fcntl.h>
 
 #include <fstream>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 #include "drpow/address.h"
 #include "../crypto/crypto_backend.h"
@@ -22,6 +24,8 @@
 #include "drpow/tx_types.h"
 #include "drpow/wallet.h"
 #include "economics_policy.h"
+#include "registry_state_store.h"
+#include "proof_verifier.h"
 
 using namespace drpow;
 static const uint64_t kAtomicPerCoin = 100000000ULL;
@@ -89,6 +93,7 @@ static void Usage(const char* bin)
     printf("  %s tx submit <tx_hex_file> <node_host:port> [network_magic_hex]\n", bin);
     printf("  %s tx status <tx_hex_file> [node_data_dir]\n", bin);
     printf("  %s send --to <address> --amount <decimal> [--data-dir <dir>] [--node-data-dir <dir>] [--node <host:port>] [--magic <hex>]\n", bin);
+    printf("  %s net health [--data-dir <dir>] [--magic <hex>] [--registry-file <path>] [--node <host:port>]\n", bin);
     printf("  %s getbalance [data_dir] [network_magic_hex] [registry_file]\n", bin);
     printf("  %s getutxo [data_dir] [network_magic_hex] [registry_file]\n", bin);
 }
@@ -826,6 +831,104 @@ static bool FileStatSimple(const std::string& path, uint64_t* out_size)
     return true;
 }
 
+static bool LoadSyncedTipFileCli(const std::string& tip_file, uint64_t* out_round)
+{
+    if (!out_round)
+        return false;
+    *out_round = 0;
+    std::ifstream in(tip_file.c_str(), std::ios::binary);
+    if (!in.good())
+        return false;
+    in.read((char*)out_round, sizeof(*out_round));
+    return in.good();
+}
+
+static bool ParseHostPortLocal(const std::string& s, std::string* host, uint16_t* port)
+{
+    if (!host || !port)
+        return false;
+    const size_t c = s.rfind(':');
+    if (c == std::string::npos)
+        return false;
+    *host = s.substr(0, c);
+    *port = (uint16_t)atoi(s.substr(c + 1).c_str());
+    return !host->empty() && *port != 0;
+}
+
+static bool ProbeEndpointTcp(const std::string& endpoint, int timeout_ms)
+{
+    std::string host;
+    uint16_t port = 0;
+    if (!ParseHostPortLocal(endpoint, &host, &port))
+        return false;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_family = AF_INET;
+    char port_s[16];
+    snprintf(port_s, sizeof(port_s), "%u", (unsigned)port);
+    struct addrinfo* res = NULL;
+    if (getaddrinfo(host.c_str(), port_s, &hints, &res) != 0 || !res)
+        return false;
+    bool ok = false;
+    for (struct addrinfo* ai = res; ai; ai = ai->ai_next)
+    {
+        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0)
+            continue;
+        int flags = fcntl(fd, F_GETFL, 0);
+        if (flags >= 0)
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+        int rc = connect(fd, ai->ai_addr, (socklen_t)ai->ai_addrlen);
+        if (rc == 0)
+        {
+            ok = true;
+            close(fd);
+            break;
+        }
+        if (rc < 0 && errno == EINPROGRESS)
+        {
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            struct timeval tv;
+            tv.tv_sec = timeout_ms / 1000;
+            tv.tv_usec = (timeout_ms % 1000) * 1000;
+            int sel = select(fd + 1, NULL, &wfds, NULL, &tv);
+            if (sel > 0 && FD_ISSET(fd, &wfds))
+            {
+                int so_err = 0;
+                socklen_t sl = sizeof(so_err);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_err, &sl) == 0 && so_err == 0)
+                    ok = true;
+            }
+        }
+        close(fd);
+        if (ok)
+            break;
+    }
+    freeaddrinfo(res);
+    return ok;
+}
+
+static std::vector<std::string> LoadEndpointsFromFile(const std::string& path)
+{
+    std::vector<std::string> out;
+    std::ifstream in(path.c_str());
+    if (!in.good())
+        return out;
+    std::string line;
+    while (std::getline(in, line))
+    {
+        if (line.empty())
+            continue;
+        out.push_back(line);
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
 static int WalletIdentityCmd(const char* subcmd, const char* dir, uint32_t magic)
 {
     std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
@@ -875,6 +978,7 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     const std::string node_dir = DetectDefaultNodeDataDir();
     const std::string node_commitlog = node_dir + "/commit.log";
     const std::string node_sync_tip = node_dir + "/sync_tip.dat";
+    const std::string node_evidence = node_dir + "/equivocation.log";
 
     std::vector<LocalUtxo> utxos;
     uint64_t balance = 0;
@@ -886,6 +990,24 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     const bool ledger_exists = FileStatSimple(ledger_file, &ledger_bytes);
     const bool commitlog_exists = FileStatSimple(node_commitlog, &commitlog_bytes);
     const bool sync_tip_exists = FileStatSimple(node_sync_tip, &sync_tip_bytes);
+    uint64_t sync_tip_round = 0;
+    const bool have_sync_tip_round = LoadSyncedTipFileCli(node_sync_tip, &sync_tip_round);
+    uint64_t last_commit_round = 0;
+    {
+        uint8_t signer_priv[32];
+        BasicProofVerifier pv(crypto.get());
+        if (HexTo32(id.privkey_hex, signer_priv))
+        {
+            RegistryStateStore store(registry_file,
+                                     node_commitlog,
+                                     node_evidence,
+                                     &pv,
+                                     crypto.get(),
+                                     signer_priv,
+                                     &id.pubkey);
+            last_commit_round = store.LastVerifiedCommitRound();
+        }
+    }
 
     printf("wallet_profile=%s\n", profile ? profile : "wallet");
     printf("data_dir=%s\n", dir);
@@ -906,6 +1028,9 @@ static int WalletInfoCmd(const char* dir, uint32_t magic, const char* registry_f
     printf("node_sync_tip_file=%s\n", node_sync_tip.c_str());
     printf("node_sync_tip_file_exists=%d\n", sync_tip_exists ? 1 : 0);
     printf("node_sync_tip_file_bytes=%llu\n", (unsigned long long)sync_tip_bytes);
+    if (have_sync_tip_round)
+        printf("sync_tip_round=%llu\n", (unsigned long long)sync_tip_round);
+    printf("last_commit_round=%llu\n", (unsigned long long)last_commit_round);
     if (!have_registry)
         printf("wallet_registry_status=unavailable\n");
     else
@@ -1208,6 +1333,114 @@ static int MempoolDemo()
     return 0;
 }
 
+static int NetHealthCmd(int argc, char** argv)
+{
+    std::string data_dir = DetectDefaultNodeDataDir();
+    std::string magic_s = "52504f57";
+    std::string registry_file_opt;
+    std::string direct_node_probe;
+    for (int i = 3; i < argc; ++i)
+    {
+        std::string a = argv[i];
+        if (a == "--data-dir" && i + 1 < argc)
+            data_dir = argv[++i];
+        else if (a == "--magic" && i + 1 < argc)
+            magic_s = argv[++i];
+        else if (a == "--registry-file" && i + 1 < argc)
+            registry_file_opt = argv[++i];
+        else if (a == "--node" && i + 1 < argc)
+            direct_node_probe = argv[++i];
+        else
+        {
+            printf("net_health_error: bad_arg %s\n", a.c_str());
+            return 2;
+        }
+    }
+
+    const uint32_t magic = ParseMagic(magic_s.c_str());
+    const std::string registry_file = registry_file_opt.empty() ? ResolveRegistryPath(data_dir.c_str(), NULL) : registry_file_opt;
+    const std::string sync_tip_file = data_dir + "/sync_tip.dat";
+    const std::string commitlog_file = data_dir + "/commit.log";
+    const std::string evid_file = data_dir + "/equivocation.log";
+
+    uint64_t synced_round = 0;
+    const bool have_sync_tip = LoadSyncedTipFileCli(sync_tip_file, &synced_round);
+
+    std::unique_ptr<CryptoBackend> crypto = CreateCryptoBackendFromEnv();
+    if (!crypto.get())
+    {
+        printf("net_health_error: crypto_backend_unavailable\n");
+        return 3;
+    }
+    WalletIdentity id;
+    std::string err;
+    std::string key_file;
+    if (!LoadWalletIdentityResolved(data_dir.c_str(), magic, crypto.get(), false, &id, &err, &key_file))
+    {
+        printf("net_health_error: wallet_identity_unavailable reason=%s\n", err.c_str());
+        return 4;
+    }
+
+    uint64_t local_round = 0;
+    {
+        uint8_t signer_priv[32];
+        BasicProofVerifier pv(crypto.get());
+        if (HexTo32(id.privkey_hex, signer_priv))
+        {
+            RegistryStateStore store(registry_file,
+                                     commitlog_file,
+                                     evid_file,
+                                     &pv,
+                                     crypto.get(),
+                                     signer_priv,
+                                     &id.pubkey);
+            local_round = store.LastVerifiedCommitRound();
+        }
+    }
+    const uint64_t lag = (synced_round > local_round) ? (synced_round - local_round) : 0;
+
+    std::vector<LocalUtxo> utxos;
+    uint64_t balance = 0;
+    const bool have_registry = LoadWalletUtxosFromRegistry(registry_file, id.pubkey, &utxos, &balance);
+    const int send_ready = (have_registry && balance > 0) ? 1 : 0;
+
+    std::vector<std::string> peers = LoadEndpointsFromFile(data_dir + "/peers.txt");
+    std::vector<std::string> discovered = LoadEndpointsFromFile(data_dir + "/discovered_peers.txt");
+    peers.insert(peers.end(), discovered.begin(), discovered.end());
+    std::sort(peers.begin(), peers.end());
+    peers.erase(std::unique(peers.begin(), peers.end()), peers.end());
+
+    size_t peers_connected = 0;
+    for (size_t i = 0; i < peers.size(); ++i)
+        if (ProbeEndpointTcp(peers[i], 250))
+            peers_connected += 1;
+    bool direct_node_ok = false;
+    if (!direct_node_probe.empty())
+        direct_node_ok = ProbeEndpointTcp(direct_node_probe, 400);
+
+    printf("net_health=ok\n");
+    printf("data_dir=%s\n", data_dir.c_str());
+    printf("network_magic_hex=%08x\n", (unsigned)magic);
+    printf("peers_known=%zu\n", peers.size());
+    printf("peers_connected=%zu\n", peers_connected);
+    if (!direct_node_probe.empty())
+    {
+        printf("node_probe_endpoint=%s\n", direct_node_probe.c_str());
+        printf("node_probe_connected=%d\n", direct_node_ok ? 1 : 0);
+    }
+    printf("local_round=%llu\n", (unsigned long long)local_round);
+    printf("synced_round=%llu\n", (unsigned long long)(have_sync_tip ? synced_round : 0));
+    printf("lag=%llu\n", (unsigned long long)lag);
+    printf("send_ready=%d\n", send_ready);
+    if (!have_registry)
+        printf("send_hint=registry_unavailable\n");
+    else if (balance == 0)
+        printf("send_hint=insufficient_funds\n");
+    else
+        printf("send_hint=ok\n");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
     const std::string default_seed_node_dir = DetectDefaultNodeDataDir();
@@ -1348,6 +1581,14 @@ int main(int argc, char** argv)
     if (cmd == "send")
     {
         return SendCmd(argc, argv);
+    }
+    if (cmd == "net")
+    {
+        if (argc >= 3 && std::string(argv[2]) == "health")
+            return NetHealthCmd(argc, argv);
+        printf("net usage:\n");
+        printf("  %s net health [--data-dir <dir>] [--magic <hex>] [--registry-file <path>] [--node <host:port>]\n", argv[0]);
+        return 1;
     }
 
     Usage(argv[0]);
