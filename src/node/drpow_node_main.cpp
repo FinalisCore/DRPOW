@@ -2832,6 +2832,11 @@ int main(int argc, char** argv)
         }
         if (env.msg_type == WIRE_MSG_TX)
         {
+            const std::string tx_ep = reactor.PeerEndpoint(peer_fd);
+            printf("tx_submit_received fd=%d endpoint=%s payload_bytes=%zu\n",
+                   peer_fd,
+                   tx_ep.empty() ? "<unknown>" : tx_ep.c_str(),
+                   env.payload.size());
             SpendTx tx;
             if (!ParseSpendTxSubmitPayload(env.payload, &tx))
             {
