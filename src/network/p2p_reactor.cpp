@@ -52,6 +52,15 @@ static bool SendAll(int fd, const uint8_t* data, size_t n)
     return true;
 }
 
+static bool IsLoopbackEndpoint(const std::string& ep)
+{
+    if (ep.empty())
+        return false;
+    return ep.find("127.0.0.1:") == 0 ||
+           ep.find("::1:") == 0 ||
+           ep.find("[::1]:") == 0;
+}
+
 }  // namespace
 
 P2PReactor::P2PReactor(uint16_t bind_port, const std::vector<std::string>& peers, const Bytes32& local_node_id)
@@ -451,7 +460,10 @@ void P2PReactor::OnPeerReadable(size_t idx)
                 peers_fd_.erase(peers_fd_.begin() + idx);
                 return;
             }
-            if (env.msg_type != WIRE_MSG_HELLO || env.payload.size() != 32)
+            const bool allow_local_tx_without_hello =
+                (env.msg_type == WIRE_MSG_TX && IsLoopbackEndpoint(c.endpoint));
+            if (!allow_local_tx_without_hello &&
+                (env.msg_type != WIRE_MSG_HELLO || env.payload.size() != 32))
             {
                 if (c.outbound && !c.endpoint.empty())
                     outbound_fd_by_endpoint_.erase(c.endpoint);
@@ -459,7 +471,8 @@ void P2PReactor::OnPeerReadable(size_t idx)
                 peers_fd_.erase(peers_fd_.begin() + idx);
                 return;
             }
-            c.saw_hello = true;
+            if (!allow_local_tx_without_hello)
+                c.saw_hello = true;
         }
         if (on_message_)
             on_message_(c.fd, env);
