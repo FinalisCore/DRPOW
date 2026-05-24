@@ -57,6 +57,7 @@ static bool IsLoopbackEndpoint(const std::string& ep)
     if (ep.empty())
         return false;
     return ep.find("127.0.0.1:") == 0 ||
+           ep.find("::ffff:127.0.0.1:") == 0 ||
            ep.find("::1:") == 0 ||
            ep.find("[::1]:") == 0;
 }
@@ -465,6 +466,10 @@ void P2PReactor::OnPeerReadable(size_t idx)
             if (!allow_local_tx_without_hello &&
                 (env.msg_type != WIRE_MSG_HELLO || env.payload.size() != 32))
             {
+                printf("drop prehello endpoint=%s type=%u payload=%zu\n",
+                       c.endpoint.empty() ? "<unknown>" : c.endpoint.c_str(),
+                       (unsigned)env.msg_type,
+                       env.payload.size());
                 if (c.outbound && !c.endpoint.empty())
                     outbound_fd_by_endpoint_.erase(c.endpoint);
                 close(c.fd);
