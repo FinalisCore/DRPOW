@@ -1131,23 +1131,20 @@ int main(int argc, char** argv)
 
         std::set<std::string> seen;
         std::vector< std::vector<uint8_t> > compacted;
-        const uint64_t kWindow = 4096;
         uint64_t low = 1;
         uint64_t high = 0;
         if (synced_last_round > last_committed_round)
         {
-            // Catch-up mode: keep forward window only.
-            low = last_committed_round + 1;
+            // Catch-up mode: keep full history up to synced tip so late joiners
+            // can always reconstruct deterministic targets from genesis.
+            low = 1;
             high = synced_last_round;
-            if (high > low + kWindow)
-                high = low + kWindow;
         }
         else
         {
-            // Normal mode: retain recent committed payloads for serving peers.
+            // Normal mode: retain full committed history for deterministic sync serving.
+            low = 1;
             high = last_committed_round;
-            if (high > kWindow)
-                low = high - kWindow + 1;
         }
 
         for (size_t i = 0; i < entries.size(); ++i)
@@ -1162,27 +1159,8 @@ int main(int argc, char** argv)
             compacted.push_back(entries[i].payload);
         }
 
-        // Hard byte cap retention: keep newest payloads within cap after round-window filtering.
-        const uint64_t kCommitPayloadCacheMaxBytes = 64ULL * 1024ULL * 1024ULL;
-        uint64_t kept_bytes = 0;
-        std::vector< std::vector<uint8_t> > capped_rev;
-        capped_rev.reserve(compacted.size());
-        for (size_t i = compacted.size(); i > 0; --i)
-        {
-            const std::vector<uint8_t>& p = compacted[i - 1];
-            const uint64_t entry_bytes = (uint64_t)p.size() + 4ULL;
-            if (!capped_rev.empty() && kept_bytes + entry_bytes > kCommitPayloadCacheMaxBytes)
-                break;
-            kept_bytes += entry_bytes;
-            capped_rev.push_back(p);
-        }
-        std::vector< std::vector<uint8_t> > capped;
-        capped.reserve(capped_rev.size());
-        for (size_t i = capped_rev.size(); i > 0; --i)
-            capped.push_back(capped_rev[i - 1]);
-
-        (void)RewriteCommitPayloadCache(commit_payload_cache, capped);
-        const size_t after_count = capped.size();
+        (void)RewriteCommitPayloadCache(commit_payload_cache, compacted);
+        const size_t after_count = compacted.size();
         const uint64_t after_bytes = FileSizeBytes(commit_payload_cache);
         printf("sync_cache_compact before=%zu after=%zu before_bytes=%llu after_bytes=%llu low=%llu high=%llu\n",
                before_count,
@@ -1371,17 +1349,6 @@ int main(int argc, char** argv)
                 continue;
             if (batch.round != last_committed_round + 1)
             {
-                if (last_committed_round == 0 && batch.round > 1)
-                {
-                    // Bootstrap fast-forward for late joiners when peers only have recent
-                    // cached payloads. Anchor just before the first available round and
-                    // continue deterministic commit verification from there.
-                    printf("catchup_fast_forward anchor_from=%llu anchor_to=%llu\n",
-                           (unsigned long long)last_committed_round,
-                           (unsigned long long)(batch.round - 1));
-                    last_committed_round = batch.round - 1;
-                    continue;
-                }
                 printf("catchup_break_noncontiguous expected=%llu got=%llu\n",
                        (unsigned long long)(last_committed_round + 1),
                        (unsigned long long)batch.round);
